@@ -1,0 +1,256 @@
+# -*- mode: org -*-
+# -*- coding: utf-8 -*-
+# -*- org-src-preserve-indentation: t; org-edit-src-content: 0; -*-
+
+# ==============================================================================
+# author          :Ghislain Vieilledent
+# email           :ghislain.vieilledent@cirad.fr, ghislainv@gmail.com
+# web             :https://ecology.ghislainv.fr
+# license         :GPLv3
+# ==============================================================================
+
+#+title: Aravo
+#+author: Ghislain Vieilledent
+#+email: ghislain.vieilledent@cirad.fr
+
+#+LANGUAGE: en
+#+TAGS: Blog(B) noexport(n) Stats(S)
+#+TAGS: Ecology(E) R(R) OrgMode(O) Python(P)
+#+EXPORT_SELECT_TAGS: Blog
+#+OPTIONS: H:3 num:t toc:nil \n:nil @:t ::t |:t ^:{} -:t f:t *:t <:t
+#+OPTIONS: html-postamble:nil
+#+EXPORT_SELECT_TAGS: export
+#+EXPORT_EXCLUDE_TAGS: noexport
+#+HTML_DOCTYPE: html5
+#+HTML_HEAD: <link rel="stylesheet" type="text/css" href="style.css"/>
+
+# For math display
+#+LATEX_HEADER: \usepackage{amsfonts}
+#+LATEX_HEADER: \usepackage{unicode-math}
+
+#+PROPERTY: header-args :eval never-export
+
+* Libraries
+
+#+begin_src python :results output :session :exports both
+import arviz as az
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import pickle
+import pymc3 as pm
+import theano
+
+print(f"Running on PyMC3 v{pm.__version__}")
+#+end_src
+
+#+RESULTS:
+: Running on PyMC3 v3.11.2
+
+* Polynomial functions
+
+From [[http://davmre.github.io/blog/python/2013/12/15/orthogonal_poly][here]]:
+
+#+begin_src python :results output :session :exports both
+def ortho_poly_fit(x, degree = 1):
+    n = degree + 1
+    x = np.asarray(x).flatten()
+    if(degree >= len(np.unique(x))):
+            stop("'degree' must be less than number of unique points")
+    xbar = np.mean(x)
+    x = x - xbar
+    X = np.fliplr(np.vander(x, n))
+    q,r = np.linalg.qr(X)
+
+    z = np.diag(np.diag(r))
+    raw = np.dot(q, z)
+
+    norm2 = np.sum(raw**2, axis=0)
+    alpha = (np.sum((raw**2)*np.reshape(x,(-1,1)), axis=0)/norm2 + xbar)[:degree]
+    Z = raw / np.sqrt(norm2)
+    return Z, norm2, alpha
+
+def ortho_poly_predict(x, alpha, norm2, degree = 1):
+    x = np.asarray(x).flatten()
+    n = degree + 1
+    Z = np.empty((len(x), n))
+    Z[:,0] = 1
+    if degree > 0:
+        Z[:, 1] = x - alpha[0]
+    if degree > 1:
+      for i in np.arange(1,degree):
+          Z[:, i+1] = (x - alpha[i]) * Z[:, i] - (norm2[i] / norm2[i-1]) * Z[:, i-1]
+    Z /= np.sqrt(norm2)
+    return Z  
+#+end_src
+
+#+RESULTS:
+
+* Data
+
+** Importing data
+
+Data include abundances of 82 species in 75 sites. Species are
+discribed by 8 functional traits and envronment on each site is
+discribed by 6 variables.
+
+#+begin_src python :results output :session :exports both
+aravo_spe = pd.read_csv("data/aravo/aravo_spe.csv")
+aravo_env = pd.read_csv("data/aravo/aravo_env.csv")
+aravo_traits = pd.read_csv("data/aravo/aravo_traits.csv")
+n_sites = aravo_spe.shape[0]
+n_species = aravo_spe.shape[1]
+print(aravo_spe.shape)
+print(aravo_env.shape)
+print(aravo_traits.shape)
+#+end_src
+
+#+RESULTS:
+: (75, 82)
+: (75, 6)
+: (82, 8)
+
+#+begin_src python :results output :session :exports both
+print(aravo_env.head())
+print()
+print(aravo_traits.head())
+#+end_src
+
+#+RESULTS:
+#+begin_example
+Aspect  Slope  Form  PhysD ZoogD  Snow
+0       7      2     1     50    no   140
+1       1     35     3     40    no   140
+2       5      0     3     20    no   140
+3       9     30     3     80    no   140
+4       9      5     1     80    no   140
+
+   Height  Spread  Angle   Area  Thick   SLA  N_mass  Seed
+0     6.0      10     80   60.0   0.12   8.1  218.70  0.08
+1     5.0      20     20  190.9   0.20  15.1  203.85  0.21
+2    15.0       5     50  280.0   0.08  18.0  219.60  0.54
+3     0.0      30     80  600.0   0.20  10.6  233.20  1.72
+4    12.0      30     60  420.0   0.14  12.5  156.25  1.17
+#+end_example
+
+** Preparing data
+
+Transform abundances into presences-absences.
+
+#+begin_src python :results output :session :exports both
+aravo_spe_occ = aravo_spe.mask(aravo_spe > 0, 1)
+#+end_src
+
+#+RESULTS:
+
+Select only species present on more than 5 sites.
+
+#+begin_src python :results output :session :exports both
+nocc_per_species = aravo_spe_occ.sum(0)
+Y = aravo_spe_occ.iloc[:, (nocc_per_species >= 5).values]
+n_species = Y.shape[1]
+print(Y.shape)
+print(n_species)
+#+end_src
+
+#+RESULTS:
+: (75, 65)
+: 65
+
+Use a degree 2 polynom for snow.
+
+#+begin_src python :results output :session :exports both
+Z = ortho_poly_fit(aravo_env["Snow"], 2)
+X = Z[0][:, (1, 2)]
+print(X[:5,])
+#+end_src
+
+#+RESULTS:
+: [[-0.15715774  0.15876418]
+:  [-0.15715774  0.15876418]
+:  [-0.15715774  0.15876418]
+:  [-0.15715774  0.15876418]
+:  [-0.15715774  0.15876418]]
+
+Number of fixed parameters and latent variables.
+
+#+begin_src python :results output :session :exports both
+n_p = X.shape[1]
+n_q = 2
+print(X.shape)
+print((n_p, n_q))
+#+end_src
+
+#+RESULTS:
+: (75, 2)
+: (2, 2)
+
+* Model
+
+#+begin_src python :results output :session :exports both
+with pm.Model() as mod1:
+    # Hyperpriors
+    sigma_alpha = pm.HalfNormal("sigma_alpha", sigma=5.0)
+
+    # Priors
+    # Site random effect
+    alpha = pm.Normal("alpha", mu=0, sigma=sigma_alpha, shape=n_sites)
+    # Latent variables
+    W = pm.Normal("W", mu=0, sigma=1, shape=(n_sites, n_q))
+    # Species effects
+    beta0 = pm.Normal("beta0", mu=0, sigma=10, shape=n_species)
+    Lambda = pm.Normal("lambda", mu=0, sigma=10, shape=(n_q, n_species)) 
+    # Fixed effects for snow and snow^2
+    gamma = pm.Normal("gamma", mu=0, sigma=1, shape=n_p)
+
+    # Likelihood
+    Xgamma = pm.math.dot(X, gamma)
+    alpha_Xgamma = alpha + Xgamma
+    Wlambda = pm.math.dot(W, Lambda) 
+    logit_theta = alpha_Xgamma[:, np.newaxis] + beta0 + Wlambda
+    YY = pm.Bernoulli("Y", logit_p=logit_theta, observed=Y)
+#+end_src
+
+#+RESULTS:
+
+#+begin_src python :session :exports code
+# Inference button (TM)!
+with mod1:
+    trace = pm.sample(10000, tune=10000, target_accept=0.9, cores=2)
+#+end_src
+
+Save model and traces (cf. [[https://discourse.pymc.io/t/saving-and-loading-gp-model-in-pymc3/1801/5][link]]).
+
+#+begin_src python :results output :session :exports both
+with open("outputs/model.pickle", "wb") as f:
+    pickle.dump({'model': mod1, 'trace': trace}, f)
+#+end_src
+
+#+RESULTS:
+
+* Results
+
+Plot traces.
+
+#+begin_src python :results file :session :exports both
+with mod1:
+    axes = az.plot_trace(trace, var_names=["alpha", "beta0", "gamma", "lambda", "sigma_alpha"])
+fig = axes.ravel()[0].figure
+fig.savefig("outputs/trace.png")
+return "outputs/trace.png"
+#+end_src
+
+#+RESULTS:
+
+Parameter estimates.
+
+#+begin_src python :results output :session :exports both
+with mod1:
+    summary = az.summary(trace, var_names=["alpha", "beta0", "gamma", "lambda", "sigma_alpha"], round_to=2)
+
+summary.to_csv("outputs/model_summary.txt")
+#+end_src
+
+#+RESULTS:
+
+# EOF

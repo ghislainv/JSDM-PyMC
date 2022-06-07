@@ -1,0 +1,604 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<!-- 2022-06-07 mar. 13:37 -->
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Simulated data</title>
+<meta name="author" content="Ghislain Vieilledent" />
+<meta name="generator" content="Org Mode" />
+<link rel="stylesheet" type="text/css" href="style/worg.css"/>
+<script type="text/x-mathjax-config">
+    MathJax.Hub.Config({
+        displayAlign: "center",
+        displayIndent: "0em",
+
+        "HTML-CSS": { scale: 100,
+                        linebreaks: { automatic: "false" },
+                        webFont: "TeX"
+                       },
+        SVG: {scale: 100,
+              linebreaks: { automatic: "false" },
+              font: "TeX"},
+        NativeMML: {scale: 100},
+        TeX: { equationNumbers: {autoNumber: "AMS"},
+               MultLineWidth: "85%",
+               TagSide: "right",
+               TagIndent: ".8em"
+             }
+});
+</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.0/MathJax.js?config=TeX-AMS_HTML"></script>
+</head>
+<body>
+<div id="content" class="content">
+<header>
+<h1 class="title">Simulated data</h1>
+</header><nav id="table-of-contents" role="doc-toc">
+<h2>Table of Contents</h2>
+<div id="text-table-of-contents" role="doc-toc">
+<ul>
+<li><a href="#org9287741">1. Installing PyMC in a Python virtual environment</a></li>
+<li><a href="#org76aab16">2. Import libraries</a></li>
+<li><a href="#orgbec021b">3. Functions</a></li>
+<li><a href="#orgfd67076">4. Simulating data</a></li>
+<li><a href="#orgae4c3aa">5. Model</a></li>
+<li><a href="#orgcbc9e1b">6. Results</a></li>
+<li><a href="#org30b3329">7. Model validation</a></li>
+<li><a href="#orgdf20514">8. Breaking reflection invariance</a></li>
+</ul>
+</div>
+</nav>
+
+<div id="outline-container-org9287741" class="outline-2">
+<h2 id="org9287741"><span class="section-number-2">1.</span> Installing PyMC in a Python virtual environment</h2>
+<div class="outline-text-2" id="text-1">
+<p>
+The best way to install the package is to create a Python virtual environment, for example using <code>conda</code>. You first need to have <a href="https://docs.conda.io/en/latest/miniconda.html">miniconda3</a> installed. Then, create a <a href="https://docs.conda.io/projects/conda/en/latest/user-guide/tasks/manage-environments.html">conda environment</a> and install the PyMC package with the following commands:
+</p>
+
+<div class="org-src-container">
+<pre class="src src-shell">conda create -c conda-forge --name JSDM-PyMC pymc
+conda activate JSDM-PyMC
+</pre>
+</div>
+
+<p>
+To deactivate and delete the conda environment, use the following commands:
+</p>
+
+<div class="org-src-container">
+<pre class="src src-shell">conda deactivate
+conda env remove --name JSDM_PyMC
+</pre>
+</div>
+</div>
+</div>
+
+<div id="outline-container-org76aab16" class="outline-2">
+<h2 id="org76aab16"><span class="section-number-2">2.</span> Import libraries</h2>
+<div class="outline-text-2" id="text-2">
+<div class="org-src-container">
+<pre class="src src-python"><span class="org-keyword">import</span> sys
+
+<span class="org-keyword">import</span> arviz <span class="org-keyword">as</span> az
+<span class="org-keyword">import</span> matplotlib.pyplot <span class="org-keyword">as</span> plt
+<span class="org-keyword">import</span> numpy <span class="org-keyword">as</span> np
+<span class="org-keyword">import</span> pandas <span class="org-keyword">as</span> pd
+<span class="org-keyword">import</span> pickle
+<span class="org-keyword">import</span> pymc <span class="org-keyword">as</span> pm
+<span class="org-keyword">import</span> aesara.tensor <span class="org-keyword">as</span> at
+
+<span class="org-keyword">print</span>(f<span class="org-string">"Running on PyMC v{pm.__version__}"</span>)
+</pre>
+</div>
+
+<pre class="example">
+Running on PyMC v4.0.0
+</pre>
+</div>
+</div>
+
+
+<div id="outline-container-orgbec021b" class="outline-2">
+<h2 id="orgbec021b"><span class="section-number-2">3.</span> Functions</h2>
+<div class="outline-text-2" id="text-3">
+<div class="org-src-container">
+<pre class="src src-python"><span class="org-keyword">def</span> <span class="org-function-name">inv_logit</span>(p):
+<span class="org-highlight-indentation"> </span>   <span class="org-keyword">return</span> 1. / (1. + np.exp(-p))
+</pre>
+</div>
+</div>
+</div>
+
+<div id="outline-container-orgfd67076" class="outline-2">
+<h2 id="orgfd67076"><span class="section-number-2">4.</span> Simulating data</h2>
+<div class="outline-text-2" id="text-4">
+<div class="org-src-container">
+<pre class="src src-python"><span class="org-comment-delimiter"># </span><span class="org-comment">Set seed for repeatability</span>
+<span class="org-variable-name">SEED</span> = 12345
+<span class="org-variable-name">rng</span> = np.random.default_rng(SEED)
+<span class="org-comment-delimiter"># </span><span class="org-comment">Number of sites and species</span>
+<span class="org-variable-name">n_sites</span> = 100
+<span class="org-variable-name">n_species</span> = 20
+<span class="org-comment-delimiter"># </span><span class="org-comment">Number of latent variables</span>
+<span class="org-variable-name">n_q</span> = 2
+
+<span class="org-comment-delimiter"># </span><span class="org-comment">Ecological variables</span>
+<span class="org-variable-name">Int</span> = np.array([1]*n_sites)
+<span class="org-variable-name">x1</span> = rng.standard_normal(size=n_sites)
+<span class="org-variable-name">x2</span> = rng.standard_normal(size=n_sites)
+<span class="org-variable-name">X</span> = np.array([Int, x1, x2]).transpose()
+<span class="org-keyword">print</span>(X.shape)
+<span class="org-keyword">print</span>(X[:5,])
+<span class="org-comment-delimiter"># </span><span class="org-comment">Number of explicative variables</span>
+<span class="org-variable-name">n_p</span> = X.shape[1]
+
+<span class="org-comment-delimiter"># </span><span class="org-comment">Latent variables</span>
+<span class="org-variable-name">w1</span> = rng.standard_normal(size=n_sites)
+<span class="org-variable-name">w2</span> = rng.standard_normal(size=n_sites)
+<span class="org-variable-name">W_target</span> = np.array([w1, w2]).transpose()
+<span class="org-keyword">print</span>(W_target.shape)
+<span class="org-keyword">print</span>(W_target[:5,])
+
+<span class="org-comment-delimiter"># </span><span class="org-comment">Fixed species effects beta</span>
+<span class="org-variable-name">beta_target</span> = rng.uniform(-1, 1, n_p*n_species).reshape(n_species, n_p)
+
+<span class="org-comment-delimiter"># </span><span class="org-comment">Factor loading lambda</span>
+<span class="org-variable-name">lambda_target</span> = rng.uniform(-1, 1, n_q*n_species).reshape(n_species, n_q)
+<span class="org-comment-delimiter"># </span><span class="org-comment">Constraints on lambda</span>
+<span class="org-comment-delimiter">#</span><span class="org-comment">lambda_target[0, 1] = 0</span>
+<span class="org-comment-delimiter">#</span><span class="org-comment">lambda_target[np.arange(n_q), np.arange(n_q)] =  np.array([0.01, 0.01]) # rng.uniform(0, 1, n_q)</span>
+<span class="org-keyword">print</span>(lambda_target.shape)
+<span class="org-keyword">print</span>(lambda_target[:5,])
+
+<span class="org-comment-delimiter"># </span><span class="org-comment">Variance of random site effects </span>
+<span class="org-variable-name">sigma_alpha_target</span> = 0.5
+<span class="org-comment-delimiter"># </span><span class="org-comment">Random site effects</span>
+<span class="org-variable-name">alpha_target</span> = rng.normal(loc=0, scale=sigma_alpha_target, size=n_sites)
+
+<span class="org-comment-delimiter"># </span><span class="org-comment">Probabilities</span>
+<span class="org-variable-name">Xbeta_target</span> = np.matmul(X, beta_target.transpose())
+<span class="org-variable-name">Wlambda_target</span> = np.matmul(W_target, lambda_target.transpose()) 
+<span class="org-variable-name">logit_theta_target</span> = alpha_target[:, np.newaxis] + Xbeta_target + Wlambda_target
+<span class="org-variable-name">theta_target</span> = inv_logit(logit_theta_target)
+
+<span class="org-comment-delimiter"># </span><span class="org-comment">Simulated occurrences</span>
+<span class="org-variable-name">Y</span> = rng.binomial(n=1, p=theta_target)
+<span class="org-keyword">print</span>(Y.shape)
+</pre>
+</div>
+
+<pre class="example" id="orgf02a4cc">
+(100, 3)
+[[ 1.         -1.42382504 -0.24455253]
+ [ 1.          1.26372846 -1.99585661]
+ [ 1.         -0.87066174 -0.15524762]
+ [ 1.         -0.25917323  1.06383087]
+ [ 1.         -0.07534331 -0.27517157]]
+(100, 2)
+[[-2.29838764  0.19380935]
+ [-0.73208213 -0.12929273]
+ [ 0.7364691   0.35447909]
+ [ 0.46571672 -1.08287264]
+ [-0.10787605  0.24493923]]
+(20, 2)
+[[ 0.14303528  0.07241741]
+ [ 0.68821232 -0.52094562]
+ [ 0.51215732 -0.01298011]
+ [ 0.93054267  0.71657829]
+ [-0.95887612 -0.20087786]]
+(100, 20)
+</pre>
+</div>
+</div>
+
+
+<div id="outline-container-orgae4c3aa" class="outline-2">
+<h2 id="orgae4c3aa"><span class="section-number-2">5.</span> Model</h2>
+<div class="outline-text-2" id="text-5">
+<div class="org-src-container">
+<pre class="src src-python"><span class="org-variable-name">Lambda0</span> = at.eye(n_species, n_q)
+<span class="org-variable-name">HALFNORMAL_SCALE</span> = 1. / np.sqrt(1. - 2. / np.pi)
+</pre>
+</div>
+
+<div class="org-src-container">
+<pre class="src src-python"><span class="org-keyword">with</span> pm.Model() <span class="org-keyword">as</span> model:
+<span class="org-highlight-indentation"> </span>   <span class="org-comment-delimiter"># </span><span class="org-comment">Hyperpriors</span>
+<span class="org-highlight-indentation"> </span>   <span class="org-variable-name">sigma_alpha</span> = pm.HalfNormal(<span class="org-string">"sigma_alpha"</span>, sigma=1.0)
+
+<span class="org-highlight-indentation"> </span>   <span class="org-comment-delimiter"># </span><span class="org-comment">Priors</span>
+<span class="org-highlight-indentation"> </span>   <span class="org-comment-delimiter"># </span><span class="org-comment">Site random effect</span>
+<span class="org-highlight-indentation"> </span>   <span class="org-variable-name">alpha</span> = pm.Normal(<span class="org-string">"alpha"</span>, mu=0, sigma=sigma_alpha, shape=n_sites)
+<span class="org-highlight-indentation"> </span>   <span class="org-comment-delimiter"># </span><span class="org-comment">Latent variables</span>
+<span class="org-highlight-indentation"> </span>   <span class="org-variable-name">W</span> = pm.Normal(<span class="org-string">"W"</span>, mu=0, sigma=1, shape=(n_sites, n_q))
+<span class="org-highlight-indentation"> </span>   <span class="org-comment-delimiter"># </span><span class="org-comment">Species effects</span>
+<span class="org-highlight-indentation"> </span>   <span class="org-variable-name">beta</span> = pm.Normal(<span class="org-string">"beta"</span>, mu=0, sigma=1, shape=(n_species, n_p))
+<span class="org-highlight-indentation"> </span>   <span class="org-comment-delimiter"># </span><span class="org-comment">Factor loadings with constraints</span>
+<span class="org-highlight-indentation"> </span>   <span class="org-comment-delimiter"># </span><span class="org-comment">Diagonal</span>
+<span class="org-highlight-indentation"> </span>   <span class="org-variable-name">Lambda1</span> = at.set_subtensor(
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   Lambda0[np.arange(n_q), np.arange(n_q)],
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   pm.HalfNormal(<span class="org-string">"Lambda_diag"</span>, sigma=HALFNORMAL_SCALE, shape=n_q))
+<span class="org-highlight-indentation"> </span>   <span class="org-comment-delimiter"># </span><span class="org-comment">Inferior</span>
+<span class="org-highlight-indentation"> </span>   <span class="org-variable-name">Lambda2</span> = at.set_subtensor(
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   Lambda1[1, 0],
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   pm.Normal(<span class="org-string">"Lambda_inf"</span>, mu=0, sigma=1))
+<span class="org-highlight-indentation"> </span>   <span class="org-comment-delimiter"># </span><span class="org-comment">Block</span>
+<span class="org-highlight-indentation"> </span>   <span class="org-variable-name">Lambda</span> = pm.Deterministic(
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-string">"Lambda"</span>,
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   at.set_subtensor(
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   Lambda2[n_q:],
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   pm.Normal(<span class="org-string">"Lambda_block"</span>, mu=0, sigma=1, shape=(n_species-n_q, n_q))))
+<span class="org-highlight-indentation"> </span>   <span class="org-comment-delimiter"># </span><span class="org-comment">Likelihood</span>
+<span class="org-highlight-indentation"> </span>   <span class="org-variable-name">Xbeta</span> = pm.math.dot(X, beta.transpose())
+<span class="org-highlight-indentation"> </span>   <span class="org-variable-name">Wlambda</span> = pm.math.dot(W, Lambda.transpose()) 
+<span class="org-highlight-indentation"> </span>   <span class="org-variable-name">logit_theta</span> = alpha[:, np.newaxis] + Xbeta + Wlambda
+<span class="org-highlight-indentation"> </span>   <span class="org-variable-name">obs</span> = pm.Bernoulli(<span class="org-string">"obs"</span>, logit_p=logit_theta, observed=Y)
+</pre>
+</div>
+
+<p>
+Parameters for MCMC sampling:
+</p>
+
+<div class="org-src-container">
+<pre class="src src-python"><span class="org-variable-name">CORES</span> = 2
+<span class="org-variable-name">SAMPLE_KWARGS</span> = {
+<span class="org-highlight-indentation"> </span>   <span class="org-string">'draws'</span>: 1000,
+<span class="org-highlight-indentation"> </span>   <span class="org-string">'cores'</span>: CORES,
+<span class="org-highlight-indentation"> </span>   <span class="org-string">'init'</span>: <span class="org-string">'auto'</span>,
+<span class="org-highlight-indentation"> </span>   <span class="org-string">'tune'</span>: 1000,
+<span class="org-highlight-indentation"> </span>   <span class="org-string">'random_seed'</span>: [SEED + i <span class="org-keyword">for</span> i <span class="org-keyword">in</span> <span class="org-builtin">range</span>(CORES)]
+}
+</pre>
+</div>
+
+<div class="org-src-container">
+<pre class="src src-python"><span class="org-comment-delimiter"># </span><span class="org-comment">Inference button (TM)!</span>
+<span class="org-keyword">with</span> model:
+<span class="org-highlight-indentation"> </span>   <span class="org-variable-name">trace</span> = pm.sample(**SAMPLE_KWARGS)
+</pre>
+</div>
+
+<p>
+Save model and traces (cf. <a href="https://discourse.pymc.io/t/saving-and-loading-gp-model-in-pymc3/1801/5">link</a>). Note: not working with new PyMC 4.0 version !
+</p>
+
+<div class="org-src-container">
+<pre class="src src-python"><span class="org-variable-name">out_dir</span> = <span class="org-string">"outputs/simulated-data/"</span>
+<span class="org-comment-delimiter"># </span><span class="org-comment">with open(out_dir + "model.pickle", "wb") as f:</span>
+<span class="org-comment-delimiter">#     </span><span class="org-comment">pickle.dump({'model': model, 'trace': trace}, f)</span>
+</pre>
+</div>
+</div>
+</div>
+
+<div id="outline-container-orgcbc9e1b" class="outline-2">
+<h2 id="orgcbc9e1b"><span class="section-number-2">6.</span> Results</h2>
+<div class="outline-text-2" id="text-6">
+<p>
+Plot traces.
+</p>
+
+<div class="org-src-container">
+<pre class="src src-python"><span class="org-variable-name">ofile</span> = out_dir + <span class="org-string">"trace.png"</span>
+<span class="org-keyword">with</span> model:
+<span class="org-highlight-indentation"> </span>   <span class="org-variable-name">axes</span> = az.plot_trace(trace, var_names=[<span class="org-string">"alpha"</span>, <span class="org-string">"beta"</span>, <span class="org-string">"sigma_alpha"</span>])
+<span class="org-variable-name">fig</span> = axes.ravel()[0].figure
+fig.savefig(ofile)
+ofile
+</pre>
+</div>
+
+
+<figure id="orgdd347a2">
+<img src="outputs/simulated-data/trace.png" alt="trace.png" width="600px">
+
+</figure>
+
+<p>
+Parameter estimates.
+</p>
+
+<div class="org-src-container">
+<pre class="src src-python"><span class="org-keyword">with</span> model:
+<span class="org-highlight-indentation"> </span>   <span class="org-variable-name">summary</span> = az.summary(trace, var_names=[<span class="org-string">"alpha"</span>, <span class="org-string">"beta"</span>, <span class="org-string">"sigma_alpha"</span>], round_to=2)
+summary.to_csv(out_dir + <span class="org-string">"model_summary.txt"</span>)
+</pre>
+</div>
+
+<div class="org-src-container">
+<pre class="src src-python"><span class="org-keyword">with</span> model:
+<span class="org-highlight-indentation"> </span>   <span class="org-variable-name">alpha_est</span> = az.summary(trace, var_names=[<span class="org-string">"alpha"</span>], round_to=2)
+<span class="org-highlight-indentation"> </span>   <span class="org-variable-name">beta_est</span> = az.summary(trace, var_names=[<span class="org-string">"beta"</span>], round_to=2)
+<span class="org-highlight-indentation"> </span>   <span class="org-variable-name">lambda_est</span> = az.summary(trace, var_names=[<span class="org-string">"Lambda"</span>], round_to=2)
+<span class="org-highlight-indentation"> </span>   <span class="org-variable-name">W_est</span> = az.summary(trace, var_names=[<span class="org-string">"W"</span>], round_to=2)
+</pre>
+</div>
+
+<pre class="example">
+/home/ghislain/.pyenv/versions/miniconda3-latest/envs/JSDM-PyMC/lib/python3.10/site-packages/arviz/stats/diagnostics.py:586: RuntimeWarning: invalid value encountered in double_scalars
+  (between_chain_variance / within_chain_variance + num_samples - 1) / (num_samples)
+</pre>
+</div>
+</div>
+
+
+<div id="outline-container-org30b3329" class="outline-2">
+<h2 id="org30b3329"><span class="section-number-2">7.</span> Model validation</h2>
+<div class="outline-text-2" id="text-7">
+<div class="org-src-container">
+<pre class="src src-python"><span class="org-comment-delimiter"># </span><span class="org-comment">alpha</span>
+<span class="org-variable-name">f</span> = out_dir + <span class="org-string">"alpha.png"</span>
+<span class="org-variable-name">fig</span>, <span class="org-variable-name">ax</span> = plt.subplots(figsize=(6, 6))
+ax.scatter(alpha_target, alpha_est[<span class="org-string">"mean"</span>], c=<span class="org-string">".3"</span>)
+ax.axline((1, 1), slope=1, ls=<span class="org-string">"--"</span>, c=<span class="org-string">".3"</span>)
+ax.set_title(<span class="org-string">"alpha"</span>)
+fig.savefig(f)
+
+<span class="org-comment-delimiter"># </span><span class="org-comment">beta</span>
+<span class="org-variable-name">f</span> = out_dir + <span class="org-string">"beta.png"</span>
+<span class="org-variable-name">fig</span>, <span class="org-variable-name">ax</span> = plt.subplots(figsize=(6, 6))
+ax.scatter(beta_target.flatten(), beta_est[<span class="org-string">"mean"</span>], c=<span class="org-string">".3"</span>)
+ax.axline((1, 1), slope=1, ls=<span class="org-string">"--"</span>, c=<span class="org-string">".3"</span>)
+ax.set_title(<span class="org-string">"beta"</span>)
+fig.savefig(f)
+
+<span class="org-comment-delimiter"># </span><span class="org-comment">W</span>
+<span class="org-variable-name">f</span> = out_dir + <span class="org-string">"W.png"</span>
+<span class="org-variable-name">fig</span>, <span class="org-variable-name">ax</span> = plt.subplots(figsize=(6, 6))
+ax.scatter(W_target.flatten(), W_est[<span class="org-string">"mean"</span>], c=<span class="org-string">".3"</span>)
+ax.axline((1, 1), slope=1, ls=<span class="org-string">"--"</span>, c=<span class="org-string">".3"</span>)
+ax.set_title(<span class="org-string">"W"</span>)
+fig.savefig(f)
+
+<span class="org-comment-delimiter"># </span><span class="org-comment">lambda</span>
+<span class="org-variable-name">f</span> = out_dir + <span class="org-string">"lambda.png"</span>
+<span class="org-variable-name">fig</span>, <span class="org-variable-name">ax</span> = plt.subplots(figsize=(6, 6))
+ax.scatter(lambda_target.flatten(), lambda_est[<span class="org-string">"mean"</span>], c=<span class="org-string">".3"</span>)
+ax.axline((1, 1), slope=1, ls=<span class="org-string">"--"</span>, c=<span class="org-string">".3"</span>)
+ax.set_title(<span class="org-string">"lambda"</span>)
+fig.savefig(f)
+
+<span class="org-comment-delimiter"># </span><span class="org-comment">W_lambda</span>
+<span class="org-variable-name">W_lambda_est</span> = np.matmul(np.asarray(W_est[<span class="org-string">"mean"</span>]).reshape(n_sites, n_q),
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>np.asarray(lambda_est[<span class="org-string">"mean"</span>]).reshape(n_species, n_q).transpose())
+<span class="org-variable-name">f</span> = out_dir + <span class="org-string">"W_lambda.png"</span>
+<span class="org-variable-name">fig</span>, <span class="org-variable-name">ax</span> = plt.subplots(figsize=(6, 6))
+ax.scatter(Wlambda_target.flatten(), W_lambda_est.flatten(), c=<span class="org-string">".3"</span>)
+ax.axline((1, 1), slope=1, ls=<span class="org-string">"--"</span>, c=<span class="org-string">".3"</span>)
+ax.set_title(<span class="org-string">"W_lambda"</span>)
+fig.savefig(f)
+</pre>
+</div>
+</div>
+</div>
+
+<div id="outline-container-orgdf20514" class="outline-2">
+<h2 id="orgdf20514"><span class="section-number-2">8.</span> Breaking reflection invariance</h2>
+<div class="outline-text-2" id="text-8">
+<p>
+We fix the sign of the factor loading that has the largest \(\hat{R}\)
+statistic in one of its columns, as this will be the loading with the
+most extreme reflection symmetry.
+</p>
+
+<div class="org-src-container">
+<pre class="src src-python">j_hat, = (az.rhat(trace, var_names=<span class="org-string">"Lambda_block"</span>)
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   .<span class="org-builtin">max</span>(dim=<span class="org-string">"Lambda_block_dim_1"</span>)
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   .argmax(dim=<span class="org-string">"Lambda_block_dim_0"</span>)
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   .to_array()
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   .data)
+<span class="org-keyword">print</span>(j_hat)
+</pre>
+</div>
+
+<pre class="example">
+13
+</pre>
+
+
+<div class="org-src-container">
+<pre class="src src-python"><span class="org-variable-name">ofile</span> = out_dir + <span class="org-string">"rotation_invariance_bimodal.png"</span>
+<span class="org-variable-name">ax</span> = az.plot_pair(trace, var_names=<span class="org-string">"Lambda_block"</span>,
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span> coords={<span class="org-string">"Lambda_block_dim_0"</span>: j_hat},
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span> scatter_kwargs={<span class="org-string">'alpha'</span>: 0.25})
+
+ax.set_xlabel(<span class="org-string">""</span>);
+ax.set_ylabel(<span class="org-string">""</span>);
+plt.savefig(ofile)
+ofile
+</pre>
+</div>
+
+
+<figure id="orge7cfb7e">
+<img src="outputs/simulated-data/rotation_invariance_bimodal.png" alt="rotation_invariance_bimodal.png">
+
+</figure>
+
+<div class="org-src-container">
+<pre class="src src-python"><span class="org-variable-name">target_sign</span> = np.sign(
+<span class="org-highlight-indentation"> </span>   trace[<span class="org-string">"posterior"</span>][<span class="org-string">"Lambda_block"</span>]
+<span class="org-highlight-indentation"> </span>   [0, :, j_hat]
+<span class="org-highlight-indentation"> </span>   .mean(dim=<span class="org-string">"draw"</span>)
+<span class="org-highlight-indentation"> </span>   .data
+)
+<span class="org-keyword">print</span>(target_sign)
+</pre>
+</div>
+
+<pre class="example">
+[1. 1.]
+</pre>
+
+
+<div class="org-src-container">
+<pre class="src src-python"><span class="org-keyword">with</span> pm.Model() <span class="org-keyword">as</span> ref_model:
+<span class="org-highlight-indentation"> </span>   <span class="org-comment-delimiter"># </span><span class="org-comment">Hyperpriors</span>
+<span class="org-highlight-indentation"> </span>   <span class="org-variable-name">sigma_alpha</span> = pm.HalfNormal(<span class="org-string">"sigma_alpha"</span>, sigma=5.0)
+<span class="org-highlight-indentation"> </span>   <span class="org-comment-delimiter"># </span><span class="org-comment">Priors</span>
+<span class="org-highlight-indentation"> </span>   <span class="org-comment-delimiter"># </span><span class="org-comment">Site random effect</span>
+<span class="org-highlight-indentation"> </span>   <span class="org-variable-name">alpha</span> = pm.Normal(<span class="org-string">"alpha"</span>, mu=0, sigma=sigma_alpha, shape=n_sites)
+<span class="org-highlight-indentation"> </span>   <span class="org-comment-delimiter"># </span><span class="org-comment">Species effects</span>
+<span class="org-highlight-indentation"> </span>   <span class="org-variable-name">beta</span> = pm.Normal(<span class="org-string">"beta"</span>, mu=0, sigma=1, shape=(n_species, n_p))
+<span class="org-highlight-indentation"> </span>   <span class="org-comment-delimiter"># </span><span class="org-comment">Factor loadings with constraints</span>
+<span class="org-highlight-indentation"> </span>   <span class="org-comment-delimiter"># </span><span class="org-comment">Diagonal</span>
+<span class="org-highlight-indentation"> </span>   <span class="org-variable-name">Lambda1</span> = at.set_subtensor(
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   Lambda0[np.arange(n_q), np.arange(n_q)],
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   pm.HalfNormal(<span class="org-string">"Lambda_diag"</span>, sigma=HALFNORMAL_SCALE, shape=n_q))
+<span class="org-highlight-indentation"> </span>   <span class="org-comment-delimiter"># </span><span class="org-comment">Inferior</span>
+<span class="org-highlight-indentation"> </span>   <span class="org-variable-name">Lambda2</span> = at.set_subtensor(
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   Lambda1[1, 0],
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   pm.Normal(<span class="org-string">"Lambda_inf"</span>, mu=0, sigma=1))
+<span class="org-highlight-indentation"> </span>   <span class="org-comment-delimiter"># </span><span class="org-comment">Block</span>
+<span class="org-highlight-indentation"> </span>   <span class="org-variable-name">Lambda_block_</span> = pm.Normal(<span class="org-string">"Lambda_block_"</span>, mu=0., sigma=5., shape=(n_species-n_q, n_q))
+<span class="org-highlight-indentation"> </span>   <span class="org-variable-name">Lambda_block</span> = pm.Deterministic(
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-string">"Lambda_block"</span>,
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   target_sign * at.sgn(Lambda_block_[j_hat]) * Lambda_block_
+<span class="org-highlight-indentation"> </span>   )
+<span class="org-highlight-indentation"> </span>   <span class="org-variable-name">Lambda</span> = pm.Deterministic(
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-string">"Lambda"</span>,
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   at.set_subtensor(
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   Lambda2[n_q:],
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   Lambda_block))
+<span class="org-highlight-indentation"> </span>   <span class="org-comment-delimiter"># </span><span class="org-comment">Latent variables</span>
+<span class="org-highlight-indentation"> </span>   <span class="org-variable-name">W_</span> = pm.Normal(<span class="org-string">"W_"</span>, mu=0, sigma=1, shape=(n_sites, n_q))
+<span class="org-highlight-indentation"> </span>   <span class="org-variable-name">W</span> = pm.Deterministic(
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-string">"W"</span>, target_sign * at.sgn(Lambda_block_[j_hat]) * W_
+<span class="org-highlight-indentation"> </span>   )
+<span class="org-highlight-indentation"> </span>   <span class="org-comment-delimiter"># </span><span class="org-comment">Likelihood</span>
+<span class="org-highlight-indentation"> </span>   <span class="org-variable-name">Xbeta</span> = pm.math.dot(X, beta.transpose())
+<span class="org-highlight-indentation"> </span>   <span class="org-variable-name">Wlambda</span> = pm.math.dot(W, Lambda.transpose()) 
+<span class="org-highlight-indentation"> </span>   <span class="org-variable-name">logit_theta</span> = alpha[:, np.newaxis] + Xbeta + Wlambda
+<span class="org-highlight-indentation"> </span>   <span class="org-variable-name">obs</span> = pm.Bernoulli(<span class="org-string">"obs"</span>, logit_p=logit_theta, observed=Y)
+</pre>
+</div>
+
+<div class="org-src-container">
+<pre class="src src-python"><span class="org-variable-name">SAMPLE_KWARGS</span>[<span class="org-string">"draws"</span>] = 2000
+<span class="org-keyword">with</span> ref_model:
+<span class="org-highlight-indentation"> </span>   <span class="org-variable-name">ref_trace</span> = pm.sample(**SAMPLE_KWARGS)
+</pre>
+</div>
+
+<div class="org-src-container">
+<pre class="src src-python"><span class="org-keyword">with</span> ref_model:
+<span class="org-highlight-indentation"> </span>   <span class="org-variable-name">alpha_est</span> = az.summary(ref_trace, var_names=[<span class="org-string">"alpha"</span>], round_to=2)
+<span class="org-highlight-indentation"> </span>   <span class="org-variable-name">beta_est</span> = az.summary(ref_trace, var_names=[<span class="org-string">"beta"</span>], round_to=2)
+<span class="org-highlight-indentation"> </span>   <span class="org-variable-name">lambda_block_est</span> = az.summary(ref_trace, var_names=[<span class="org-string">"Lambda_block"</span>], round_to=2)
+<span class="org-highlight-indentation"> </span>   <span class="org-variable-name">W_est</span> = az.summary(ref_trace, var_names=[<span class="org-string">"W"</span>], round_to=2)
+<span class="org-keyword">print</span>(lambda_block_est)
+</pre>
+</div>
+
+<pre class="example" id="orga9b9db3">
+                     mean    sd  hdi_3%  hdi_97%  mcse_mean  mcse_sd  ess_bulk  ess_tail  r_hat
+Lambda_block[0, 0]   0.22  0.38   -0.47     0.96       0.01     0.01    894.23   1298.98   1.00
+Lambda_block[0, 1]  -0.02  0.38   -0.77     0.68       0.01     0.01   1082.64   1509.54   1.00
+Lambda_block[1, 0]   0.54  1.04   -1.24     2.63       0.08     0.06    170.59    317.62   1.00
+Lambda_block[1, 1]   2.67  1.50    0.50     6.37       0.10     0.07    285.54    105.14   1.00
+Lambda_block[2, 0]  -1.42  0.76   -2.73     0.01       0.04     0.03    347.06    328.72   1.00
+Lambda_block[2, 1]  -0.98  0.79   -2.51     0.42       0.05     0.04    209.17    445.59   1.00
+Lambda_block[3, 0]  -0.72  0.50   -1.61     0.25       0.03     0.02    275.96    409.05   1.00
+Lambda_block[3, 1]  -0.75  0.58   -1.83     0.45       0.04     0.03    274.14    149.67   1.00
+Lambda_block[4, 0]   0.44  0.65   -0.75     1.70       0.04     0.03    256.73    540.67   1.00
+Lambda_block[4, 1]   1.48  0.95   -0.03     3.28       0.07     0.05    227.55    146.74   1.01
+Lambda_block[5, 0]  -1.22  0.64   -2.61    -0.20       0.03     0.02    410.72    375.63   1.00
+Lambda_block[5, 1]  -0.71  0.61   -1.79     0.53       0.04     0.03    244.57    341.60   1.00
+Lambda_block[6, 0]  -1.66  0.81   -3.31    -0.36       0.04     0.03    345.00    467.23   1.01
+Lambda_block[6, 1]   0.15  0.90   -1.59     2.07       0.06     0.05    216.87    148.48   1.01
+Lambda_block[7, 0]  -0.08  0.42   -0.89     0.68       0.02     0.01    576.21    645.26   1.01
+Lambda_block[7, 1]   0.19  0.48   -0.63     1.04       0.02     0.02    523.90    420.60   1.00
+Lambda_block[8, 0]  -0.62  0.45   -1.48     0.22       0.02     0.02    426.36    833.14   1.01
+Lambda_block[8, 1]   0.38  0.56   -0.59     1.59       0.04     0.03    250.67    152.49   1.01
+Lambda_block[9, 0]  -0.68  0.68   -1.98     0.55       0.05     0.03    211.20    279.84   1.01
+Lambda_block[9, 1]  -1.45  0.80   -3.06    -0.03       0.06     0.04    192.85    114.39   1.01
+Lambda_block[10, 0] -0.89  0.50   -1.79     0.04       0.02     0.01   1049.11   1639.37   1.00
+Lambda_block[10, 1] -0.02  0.56   -1.06     1.05       0.03     0.03    348.42    172.32   1.01
+Lambda_block[11, 0]  0.14  0.44   -0.69     0.94       0.02     0.02    378.66   1114.58   1.00
+Lambda_block[11, 1] -0.59  0.45   -1.42     0.31       0.02     0.01    527.70    381.43   1.00
+Lambda_block[12, 0] -1.15  0.53   -2.18    -0.21       0.02     0.02    592.57    729.90   1.00
+Lambda_block[12, 1] -0.53  0.57   -1.71     0.46       0.03     0.02    328.66    754.65   1.01
+Lambda_block[13, 0]  1.02  0.63    0.00     2.06       0.04     0.03    218.47    536.38   1.01
+Lambda_block[13, 1]  1.60  0.77    0.04     2.83       0.05     0.03    244.42    169.25   1.00
+Lambda_block[14, 0]  0.96  0.48    0.08     1.85       0.02     0.01    643.09   1164.04   1.00
+Lambda_block[14, 1]  0.06  0.53   -0.92     0.94       0.03     0.03    427.88    309.47   1.01
+Lambda_block[15, 0] -1.04  0.59   -2.22    -0.02       0.03     0.02    409.22    308.59   1.00
+Lambda_block[15, 1] -0.69  0.58   -1.87     0.30       0.04     0.03    247.97    440.50   1.01
+Lambda_block[16, 0] -1.94  1.04   -3.93    -0.16       0.06     0.04    295.05    616.06   1.01
+Lambda_block[16, 1]  0.68  0.91   -0.94     2.60       0.06     0.04    229.68    169.01   1.01
+Lambda_block[17, 0]  0.10  0.38   -0.61     0.83       0.02     0.01    443.75   1620.70   1.00
+Lambda_block[17, 1] -0.33  0.39   -1.07     0.41       0.02     0.01    638.39    684.44   1.00
+</pre>
+
+
+<div class="org-src-container">
+<pre class="src src-python"><span class="org-comment-delimiter"># </span><span class="org-comment">alpha</span>
+<span class="org-variable-name">f</span> = out_dir + <span class="org-string">"alpha_ref.png"</span>
+<span class="org-variable-name">fig</span>, <span class="org-variable-name">ax</span> = plt.subplots(figsize=(6, 6))
+ax.scatter(alpha_target, alpha_est[<span class="org-string">"mean"</span>], c=<span class="org-string">".3"</span>)
+ax.axline((1, 1), slope=1, ls=<span class="org-string">"--"</span>, c=<span class="org-string">".3"</span>)
+ax.set_title(<span class="org-string">"alpha"</span>)
+fig.savefig(f)
+
+<span class="org-comment-delimiter"># </span><span class="org-comment">beta</span>
+<span class="org-variable-name">f</span> = out_dir + <span class="org-string">"beta_ref.png"</span>
+<span class="org-variable-name">fig</span>, <span class="org-variable-name">ax</span> = plt.subplots(figsize=(6, 6))
+ax.scatter(beta_target.flatten(), beta_est[<span class="org-string">"mean"</span>], c=<span class="org-string">".3"</span>)
+ax.axline((1, 1), slope=1, ls=<span class="org-string">"--"</span>, c=<span class="org-string">".3"</span>)
+ax.set_title(<span class="org-string">"beta"</span>)
+fig.savefig(f)
+
+<span class="org-comment-delimiter"># </span><span class="org-comment">W</span>
+<span class="org-variable-name">f</span> = out_dir + <span class="org-string">"W_ref.png"</span>
+<span class="org-variable-name">fig</span>, <span class="org-variable-name">ax</span> = plt.subplots(figsize=(6, 6))
+ax.scatter(W_target.flatten(), W_est[<span class="org-string">"mean"</span>], c=<span class="org-string">".3"</span>)
+ax.axline((1, 1), slope=1, ls=<span class="org-string">"--"</span>, c=<span class="org-string">".3"</span>)
+ax.set_title(<span class="org-string">"W"</span>)
+fig.savefig(f)
+
+<span class="org-comment-delimiter"># </span><span class="org-comment">lambda</span>
+<span class="org-variable-name">f</span> = out_dir + <span class="org-string">"lambda_ref.png"</span>
+<span class="org-variable-name">fig</span>, <span class="org-variable-name">ax</span> = plt.subplots(figsize=(6, 6))
+ax.scatter(lambda_target.flatten(), lambda_est[<span class="org-string">"mean"</span>], c=<span class="org-string">".3"</span>)
+ax.axline((1, 1), slope=1, ls=<span class="org-string">"--"</span>, c=<span class="org-string">".3"</span>)
+ax.set_title(<span class="org-string">"lambda"</span>)
+fig.savefig(f)
+
+<span class="org-comment-delimiter"># </span><span class="org-comment">W_lambda</span>
+<span class="org-variable-name">W_lambda_est</span> = np.matmul(np.asarray(W_est[<span class="org-string">"mean"</span>]).reshape(n_sites, n_q),
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>np.asarray(lambda_est[<span class="org-string">"mean"</span>]).reshape(n_species, n_q).transpose())
+<span class="org-variable-name">f</span> = out_dir + <span class="org-string">"W_lambda_ref.png"</span>
+<span class="org-variable-name">fig</span>, <span class="org-variable-name">ax</span> = plt.subplots(figsize=(6, 6))
+ax.scatter(Wlambda_target.flatten(), W_lambda_est.flatten(), c=<span class="org-string">".3"</span>)
+ax.axline((1, 1), slope=1, ls=<span class="org-string">"--"</span>, c=<span class="org-string">".3"</span>)
+ax.set_title(<span class="org-string">"W_lambda"</span>)
+fig.savefig(f)
+</pre>
+</div>
+
+<div class="org-src-container">
+<pre class="src src-python"><span class="org-variable-name">ofile</span> = out_dir + <span class="org-string">"no_rotation_invariance.png"</span>
+<span class="org-variable-name">ax</span> = az.plot_pair(ref_trace, var_names=<span class="org-string">"Lambda_block"</span>,
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span> coords={<span class="org-string">"Lambda_block_dim_0"</span>: j_hat},
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span> scatter_kwargs={<span class="org-string">'alpha'</span>: 0.25})
+
+ax.set_xlabel(<span class="org-string">""</span>);
+ax.set_ylabel(<span class="org-string">""</span>);
+plt.savefig(ofile)
+ofile
+</pre>
+</div>
+
+
+<figure id="orgeeb3832">
+<img src="outputs/simulated-data/no_rotation_invariance.png" alt="no_rotation_invariance.png">
+
+</figure>
+</div>
+</div>
+</div>
+</body>
+</html>

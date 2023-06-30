@@ -1,0 +1,146 @@
+/* Original css at: */
+/* https://github.com/xz/new.css/blob/master/new.css */
+
+/* font for code blocks */
+@font-face {
+  font-family: 'Droid Sans Mono';
+  font-style: normal;
+  font-weight: 400;
+  src: url(fonts/6NUO8FuJNQ2MbkrZ5-J8lKFrp7pRef2r.woff2) format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+:root {
+    --nc-font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol";
+    --nc-font-mono: Consolas, monaco, 'Ubuntu Mono', 'Liberation Mono', 'Courier New', Courier, monospace;
+    --nc-tx-1: #000000;
+    --nc-tx-2: #1A1A1A;
+    --nc-bg-1: #FFFFFF;
+    --nc-bg-2: #F6F8FA;
+    --nc-bg-3: #E5E7EB;
+    --nc-lk-1: #185FAF;
+    --nc-lk-2: #0e3969;
+    --nc-lk-tx: #FFFFFF;
+    --nc-ac-1: #FFFF00;
+    --nc-ac-tx: #0C4047;
+    ---tx-3: #666666;
+    ---tx-4: #999999;
+    --body-max-width: 1000px;
+}
+
+body {
+    max-width: var(--body-max-width);
+}
+
+a {
+    text-decoration: none;
+}
+
+footer {
+    font-size: 0.9rem;
+    text-align: center;
+    color: var(---tx-4);
+}
+
+footer a {
+    color: var(---tx-3);
+}
+
+#banner {
+    margin: 0px auto; 
+    max-width: 100%;
+    border-radius: 10px;
+}
+
+/* Table of contents */
+#table-of-contents {
+    line-height: 1;
+    font-size: 0.9rem;
+}
+
+@media screen and (width > 1500px) {
+    #table-of-contents {
+	position: fixed;
+	top: 10.6rem;
+	left: calc((100% + var(--body-max-width)) / 2 + 2rem);
+	line-height: 1;
+	font-size: 0.9rem;
+    }
+}
+
+#logo-link {
+    margin: 0;
+}
+
+#ID_picture {
+    float: left;
+    width: 100px;
+    height: 100px;
+    margin-right: 10px;
+    margin-bottom: 0px;
+    border-radius: 5px;
+}
+
+h5 {
+    color: var(---tx-3);
+}
+
+#navbar {
+    font-size: 1.1rem;
+    font-weight: bold;
+}
+
+#navpage {
+    display:inline-block; 
+    margin-right: 0.4rem;
+}
+
+/* Highlighting code in blocks */
+.org-builtin {
+    /* font-lock-builtin-face */
+    color: #006FE0;
+}
+.org-comment {
+    /* font-lock-comment-face */
+    color: #8D8D84;
+    font-style: italic;
+}
+.org-comment-delimiter {
+    /* font-lock-comment-delimiter-face */
+    color: #8D8D84;
+}
+.org-constant {
+    /* font-lock-constant-face */
+    color: #D0372D;
+}
+.org-function-name {
+    /* font-lock-function-name-face */
+    color: #006699;
+}
+.org-keyword {
+    /* font-lock-keyword-face */
+    color: #0000FF;
+}
+.org-string {
+    /* font-lock-string-face */
+    color: #008000;
+}
+.org-variable-name {
+    /* font-lock-variable-name-face */
+    color: #BA36A5;
+}
+
+pre {
+    /* The main preformatted style. This is changed slightly across different cases. */
+    background-color: var(--nc-bg-2);
+    font-family: Droid Sans Mono, Monaco, Consolas, "Lucida Console", monospace;
+    color: black;
+    font-size: 90%;
+    padding: 0.5em;
+    overflow: auto;
+    border: none;
+    border-radius: 5px;
+}
+
+
+/* End */

@@ -1,0 +1,584 @@
+# -*- mode: org -*-
+# -*- coding: utf-8 -*-
+# -*- org-src-preserve-indentation: t; org-edit-src-content: 0; -*-
+
+# ==============================================================================
+# author          :Ghislain Vieilledent
+# email           :ghislain.vieilledent@cirad.fr, ghislainv@gmail.com
+# web             :https://ecology.ghislainv.fr
+# license         :GPLv3
+# ==============================================================================
+
+#+title: JSDM with latent variables in Python with PyMC
+#+author: Ghislain Vieilledent
+#+email: ghislain.vieilledent@cirad.fr
+
+#+LANGUAGE: en
+#+TAGS: Blog(B) noexport(n) Stats(S)
+#+TAGS: Ecology(E) R(R) OrgMode(O) Python(P)
+#+OPTIONS: H:3 num:t toc:t \n:nil @:t ::t |:t ^:{} -:t f:t *:t <:t tex:t
+#+EXPORT_SELECT_TAGS: export
+#+EXPORT_EXCLUDE_TAGS: noexport
+
+# HTML themes
+#+HTML_DOCTYPE: html5
+#+OPTIONS: html-postamble:nil html-style:nil html-scripts:nil html5-fancy:t
+#+HTML_HEAD: <link rel="stylesheet" type="text/css" href="style/worg.css"/>
+
+# For math display
+#+LATEX_HEADER: \usepackage{amsfonts}
+#+LATEX_HEADER: \usepackage{unicode-math}
+
+#+PROPERTY: header-args :eval never-export
+
+* Reference
+
+We adapted the [[https://austinrochford.com/posts/2021-07-05-factor-analysis-pymc3.html][tutorial]] by Austin Rochford on Bayesian factor analysis.
+
+* Installing PyMC in a Python virtual environment
+
+The best way to install the package is to create a Python virtual environment, for example using =conda=. You first need to have [[https://docs.conda.io/en/latest/miniconda.html][miniconda3]] installed. Then, create a [[https://docs.conda.io/projects/conda/en/latest/user-guide/tasks/manage-environments.html][conda environment]] and install the PyMC package with the following commands:
+
+#+begin_src shell
+conda create --name JSDM-PyMC -c conda-forge python=3.9
+conda activate JSDM-PyMC
+conda install -c conda-forge mamba
+mamba install -c conda-forge "pymc>=4"
+#+end_src
+
+To deactivate and delete the conda environment, use the following commands:
+
+#+begin_src shell
+conda deactivate
+conda env remove --name JSDM-PyMC
+#+end_src
+
+* Import libraries
+
+#+begin_src python :results output :session :exports both
+import sys
+
+import arviz as az
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import cloudpickle
+import pymc as pm
+import pytensor.tensor as pt
+
+print(f"Running on PyMC v{pm.__version__}")
+#+end_src
+
+#+RESULTS:
+: Running on PyMC v5.0.2
+
+* Functions
+
+#+begin_src python :results output :session :exports both
+def inv_logit(p):
+    return 1. / (1. + np.exp(-p))
+#+end_src
+
+#+RESULTS:
+
+* Simulating data
+
+#+begin_src python :results output :session :exports both
+# Set seed for repeatability
+SEED = 12345
+rng = np.random.default_rng(SEED)
+# Number of sites and species
+n_sites = 100
+n_species = 20
+# Number of latent variables
+n_q = 2
+
+# Ecological variables
+Int = np.array([1]*n_sites)
+x1 = rng.standard_normal(size=n_sites)
+x2 = rng.standard_normal(size=n_sites)
+X = np.array([Int, x1, x2]).transpose()
+print(X.shape)
+print(X[:5,])
+# Number of explicative variables
+n_p = X.shape[1]
+
+# Latent variables
+w1 = rng.standard_normal(size=n_sites)
+w2 = rng.standard_normal(size=n_sites)
+W_target = np.array([w1, w2]).transpose()
+print(W_target.shape)
+print(W_target[:5,])
+
+# Fixed species effects beta
+beta_target = rng.uniform(-1, 1, n_p*n_species).reshape(n_species, n_p)
+
+# Factor loading lambda
+lambda_target = rng.uniform(-1, 1, n_q*n_species).reshape(n_species, n_q)
+# Constraints on lambda
+#lambda_target[0, 1] = 0
+#lambda_target[np.arange(n_q), np.arange(n_q)] =  np.array([0.01, 0.01]) # rng.uniform(0, 1, n_q)
+print(lambda_target.shape)
+print(lambda_target[:5,])
+
+# Variance of random site effects 
+sigma_alpha_target = 0.5
+# Random site effects
+alpha_target = rng.normal(loc=0, scale=sigma_alpha_target, size=n_sites)
+
+# Probabilities
+Xbeta_target = np.matmul(X, beta_target.transpose())
+Wlambda_target = np.matmul(W_target, lambda_target.transpose()) 
+logit_theta_target = alpha_target[:, np.newaxis] + Xbeta_target + Wlambda_target
+theta_target = inv_logit(logit_theta_target)
+
+# Simulated occurrences
+Y = rng.binomial(n=1, p=theta_target)
+print(Y.shape)
+#+end_src
+
+#+RESULTS:
+#+begin_example
+(100, 3)
+[[ 1.         -1.42382504 -0.24455253]
+ [ 1.          1.26372846 -1.99585661]
+ [ 1.         -0.87066174 -0.15524762]
+ [ 1.         -0.25917323  1.06383087]
+ [ 1.         -0.07534331 -0.27517157]]
+(100, 2)
+[[-2.29838764  0.19380935]
+ [-0.73208213 -0.12929273]
+ [ 0.7364691   0.35447909]
+ [ 0.46571672 -1.08287264]
+ [-0.10787605  0.24493923]]
+(20, 2)
+[[ 0.14303528  0.07241741]
+ [ 0.68821232 -0.52094562]
+ [ 0.51215732 -0.01298011]
+ [ 0.93054267  0.71657829]
+ [-0.95887612 -0.20087786]]
+(100, 20)
+#+end_example
+
+* Model
+
+#+begin_src python :results output :session :exports both
+Lambda0 = pt.eye(n_species, n_q)
+HALFNORMAL_SCALE = 1. / np.sqrt(1. - 2. / np.pi)
+#+end_src
+
+#+RESULTS:
+
+#+begin_src python :results output :session :exports both
+with pm.Model() as model:
+    # Hyperpriors
+    sigma_alpha = pm.HalfNormal("sigma_alpha", sigma=1.0)
+
+    # Priors
+    # Site random effect
+    alpha = pm.Normal("alpha", mu=0, sigma=sigma_alpha, shape=n_sites)
+    # Latent variables
+    W = pm.Normal("W", mu=0, sigma=1, shape=(n_sites, n_q))
+    # Species effects
+    beta = pm.Normal("beta", mu=0, sigma=1, shape=(n_species, n_p))
+    # Factor loadings with constraints
+    # Diagonal
+    Lambda1 = pt.set_subtensor(
+        Lambda0[np.arange(n_q), np.arange(n_q)],
+        pm.HalfNormal("Lambda_diag", sigma=HALFNORMAL_SCALE, shape=n_q))
+    # Inferior
+    Lambda2 = pt.set_subtensor(
+        Lambda1[1, 0],
+        pm.Normal("Lambda_inf", mu=0, sigma=1))
+    # Block
+    Lambda = pm.Deterministic(
+        "Lambda",
+        pt.set_subtensor(
+            Lambda2[n_q:],
+            pm.Normal("Lambda_block", mu=0, sigma=1, shape=(n_species-n_q, n_q))))
+    # Likelihood
+    Xbeta = pm.math.dot(X, beta.transpose())
+    Wlambda = pm.math.dot(W, Lambda.transpose()) 
+    logit_theta = alpha[:, np.newaxis] + Xbeta + Wlambda
+    obs = pm.Bernoulli("obs", logit_p=logit_theta, observed=Y)
+#+end_src
+
+#+RESULTS:
+
+#+begin_src python :results empty :session :exports none
+# with pm.Model() as model:
+#     # Hyperpriors
+#     sigma_alpha = pm.HalfNormal("sigma_alpha", sigma=5.0)
+
+#     # Priors
+#     # Site random effect
+#     alpha = pm.Normal("alpha", mu=0, sigma=sigma_alpha, shape=n_sites)
+#     # Latent variables
+#     W = pm.Normal("W", mu=0, sigma=1, shape=(n_sites, n_q))
+#     # Species effects
+#     beta = pm.Normal("beta", mu=0, sigma=1, shape=(n_species, n_p))
+#     # Factor loadings with constraints
+#     Lambda_sup = np.array([0])
+#     Lambda_diag = pm.HalfNormal("Lambda_diag", sigma=1, shape=(n_q, 1))
+#     Lambda_inf = pm.Normal("Lambda_inf", mu=0, sigma=1, shape=1)
+#     Lambda_top = pm.math.stack((Lambda_diag[0], Lambda_sup, Lambda_inf, Lambda_diag[1])).reshape((n_q, n_q))
+#     Lambda_bottom = pm.Normal("Lambda_bottom", mu=0, sigma=1, shape=(n_species-n_q, n_q))
+#     Lambda = pm.Deterministic("Lambda", pm.math.concatenate((Lambda_top, Lambda_bottom)))
+
+#     # Likelihood
+#     Xbeta = pm.math.dot(X, beta.transpose())
+#     Wlambda = pm.math.dot(W, Lambda.transpose()) 
+#     logit_theta = alpha[:, np.newaxis] + Xbeta + Wlambda
+#     obs = pm.Bernoulli("obs", logit_p=logit_theta, observed=Y)
+#+end_src
+
+#+RESULTS:
+
+Parameters for MCMC sampling:
+
+#+begin_src python :results output :session :exports both
+CORES = 2
+SAMPLE_KWARGS = {
+    'draws': 1000,
+    'cores': CORES,
+    'init': 'auto',
+    'tune': 1000,
+    'random_seed': [SEED + i for i in range(CORES)]
+}
+#+end_src
+
+#+RESULTS:
+
+#+begin_src python :results output :session :exports code
+# Inference button (TM)!
+with model:
+    trace = pm.sample(**SAMPLE_KWARGS)
+#+end_src
+
+Save model with cloudpickle (cf. [[https://github.com/pymc-devs/pymc/issues/5886][link]]).
+
+#+begin_src python :results silent :session :exports both
+out_dir = "outputs/simulated-data/"
+with open(out_dir + "model_trace.pkl", "wb") as f:
+     model_trace_dump = cloudpickle.dumps({'model': model, 'trace': trace})
+     f.write(model_trace_dump)
+#+end_src
+
+Then, model results can be loaded with the following code:
+
+#+begin_src python :eval no :exports code
+f = open(out_dir + "model_trace.pkl", "rb")
+model_trace = cloudpickle.loads(f.read())
+#+end_src
+
+* Results
+
+Plot traces.
+
+#+begin_src python :results file :session :exports both
+ofile = out_dir + "trace.png"
+with model:
+    axes = az.plot_trace(trace, var_names=["alpha", "beta", "sigma_alpha"])
+fig = axes.ravel()[0].figure
+fig.savefig(ofile)
+ofile
+#+end_src
+
+#+ATTR_HTML: :width 600px
+#+RESULTS:
+[[file:outputs/simulated-data/trace.png]]
+
+Parameter estimates.
+
+#+begin_src python :results output :session :exports both
+with model:
+    summary = az.summary(trace, var_names=["alpha", "beta", "sigma_alpha"], round_to=2)
+summary.to_csv(out_dir + "model_summary.txt")
+#+end_src
+
+#+RESULTS:
+
+#+begin_src python :results output :session :exports both
+with model:
+    alpha_est = az.summary(trace, var_names=["alpha"], round_to=2)
+    beta_est = az.summary(trace, var_names=["beta"], round_to=2)
+    lambda_est = az.summary(trace, var_names=["Lambda"], round_to=2)
+    W_est = az.summary(trace, var_names=["W"], round_to=2)
+#+end_src
+
+#+RESULTS:
+: /home/ghislain/.pyenv/versions/miniconda3-latest/envs/JSDM-PyMC/lib/python3.9/site-packages/arviz/stats/diagnostics.py:584: RuntimeWarning: invalid value encountered in scalar divide
+:   (between_chain_variance / within_chain_variance + num_samples - 1) / (num_samples)
+
+* Model validation
+
+
+#+begin_src python :results output :session :exports both
+# alpha
+f = out_dir + "alpha.png"
+fig, ax = plt.subplots(figsize=(6, 6))
+ax.scatter(alpha_target, alpha_est["mean"], c=".3")
+ax.axline((1, 1), slope=1, ls="--", c=".3")
+ax.set_title("alpha")
+fig.savefig(f)
+
+# beta
+f = out_dir + "beta.png"
+fig, ax = plt.subplots(figsize=(6, 6))
+ax.scatter(beta_target.flatten(), beta_est["mean"], c=".3")
+ax.axline((1, 1), slope=1, ls="--", c=".3")
+ax.set_title("beta")
+fig.savefig(f)
+
+# W
+f = out_dir + "W.png"
+fig, ax = plt.subplots(figsize=(6, 6))
+ax.scatter(W_target.flatten(), W_est["mean"], c=".3")
+ax.axline((1, 1), slope=1, ls="--", c=".3")
+ax.set_title("W")
+fig.savefig(f)
+
+# lambda
+f = out_dir + "lambda.png"
+fig, ax = plt.subplots(figsize=(6, 6))
+ax.scatter(lambda_target.flatten(), lambda_est["mean"], c=".3")
+ax.axline((1, 1), slope=1, ls="--", c=".3")
+ax.set_title("lambda")
+fig.savefig(f)
+
+# W_lambda
+W_lambda_est = np.matmul(
+    np.asarray(W_est["mean"]).reshape(n_sites, n_q),
+    np.asarray(lambda_est["mean"]).reshape(n_species, n_q).transpose())
+f = out_dir + "W_lambda.png"
+fig, ax = plt.subplots(figsize=(6, 6))
+ax.scatter(Wlambda_target.flatten(), W_lambda_est.flatten(), c=".3")
+ax.axline((1, 1), slope=1, ls="--", c=".3")
+ax.set_title("W_lambda")
+fig.savefig(f)
+#+end_src
+
+#+RESULTS:
+
+* Breaking reflection invariance
+
+We fix the sign of the factor loading that has the largest $\hat{R}$ statistic in one of its columns, as this will be the loading with the most extreme reflection symmetry.
+
+#+begin_src python :results output :session :exports both
+j_hat, = (az.rhat(trace, var_names="Lambda_block")
+            .max(dim="Lambda_block_dim_1")
+            .argmax(dim="Lambda_block_dim_0")
+            .to_array()
+            .data)
+print(j_hat)
+#+end_src
+
+#+RESULTS:
+: 4
+
+#+begin_src python :results file :session :exports both
+ofile = out_dir + "rotation_invariance_bimodal.png"
+ax = az.plot_pair(trace, var_names="Lambda_block",
+                  coords={"Lambda_block_dim_0": j_hat},
+                  scatter_kwargs={'alpha': 0.25})
+
+ax.set_xlabel("");
+ax.set_ylabel("");
+plt.savefig(ofile)
+ofile
+#+end_src
+
+#+RESULTS:
+[[file:outputs/simulated-data/rotation_invariance_bimodal.png]]
+
+#+begin_src python :results output :session :exports both
+target_sign = np.sign(
+    trace["posterior"]["Lambda_block"]
+    [0, :, j_hat]
+    .mean(dim="draw")
+    .data
+)
+print(target_sign)
+#+end_src
+
+#+RESULTS:
+: [1. 1.]
+
+#+begin_src python :results output :session :exports both
+with pm.Model() as ref_model:
+    # Hyperpriors
+    sigma_alpha = pm.HalfNormal("sigma_alpha", sigma=5.0)
+    # Priors
+    # Site random effect
+    alpha = pm.Normal("alpha", mu=0, sigma=sigma_alpha, shape=n_sites)
+    # Species effects
+    beta = pm.Normal("beta", mu=0, sigma=1, shape=(n_species, n_p))
+    # Factor loadings with constraints
+    # Diagonal
+    Lambda1 = pt.set_subtensor(
+        Lambda0[np.arange(n_q), np.arange(n_q)],
+        pm.HalfNormal("Lambda_diag", sigma=HALFNORMAL_SCALE, shape=n_q))
+    # Inferior
+    Lambda2 = pt.set_subtensor(
+        Lambda1[1, 0],
+        pm.Normal("Lambda_inf", mu=0, sigma=1))
+    # Block
+    Lambda_block_ = pm.Normal("Lambda_block_", mu=0,
+                              sigma=1, shape=(n_species-n_q, n_q))
+    Lambda_block = pm.Deterministic(
+        "Lambda_block",
+        target_sign * pt.sgn(Lambda_block_[j_hat]) * Lambda_block_
+    )
+    Lambda = pm.Deterministic(
+        "Lambda",
+        pt.set_subtensor(
+            Lambda2[n_q:],
+            Lambda_block))
+    # Latent variables
+    W_ = pm.Normal("W_", mu=0, sigma=1, shape=(n_sites, n_q))
+    W = pm.Deterministic(
+        "W", target_sign * pt.sgn(Lambda_block_[j_hat]) * W_
+    )
+    # Likelihood
+    Xbeta = pm.math.dot(X, beta.transpose())
+    Wlambda = pm.math.dot(W, Lambda.transpose()) 
+    logit_theta = alpha[:, np.newaxis] + Xbeta + Wlambda
+    obs = pm.Bernoulli("obs", logit_p=logit_theta, observed=Y)
+#+end_src
+
+#+RESULTS:
+
+#+begin_src python :results output :session :exports both
+SAMPLE_KWARGS["draws"] = 2000
+with ref_model:
+    ref_trace = pm.sample(**SAMPLE_KWARGS)
+#+end_src
+
+#+RESULTS:
+
+#+begin_src python :results output :session :exports both
+with ref_model:
+    alpha_est = az.summary(ref_trace, var_names=["alpha"], round_to=2)
+    beta_est = az.summary(ref_trace, var_names=["beta"], round_to=2)
+    lambda_block_est = az.summary(ref_trace, var_names=["Lambda_block"], round_to=2)
+    W_est = az.summary(ref_trace, var_names=["W"], round_to=2)
+print(lambda_block_est)
+#+end_src
+
+#+RESULTS:
+#+begin_example
+                     mean    sd  hdi_3%  ...  ess_bulk  ess_tail  r_hat
+Lambda_block[0, 0]   0.22  0.37   -0.45  ...   1128.11   1902.92   1.00
+Lambda_block[0, 1]  -0.01  0.39   -0.73  ...   1288.62   1936.07   1.00
+Lambda_block[1, 0]   0.75  1.12   -1.41  ...    122.15    109.18   1.01
+Lambda_block[1, 1]   2.86  1.71   -0.49  ...     98.69     62.87   1.01
+Lambda_block[2, 0]  -1.44  0.67   -2.73  ...    594.18   1090.17   1.00
+Lambda_block[2, 1]  -0.85  0.71   -2.27  ...    284.73    296.02   1.01
+Lambda_block[3, 0]  -0.74  0.49   -1.67  ...    478.37    640.95   1.01
+Lambda_block[3, 1]  -0.77  0.58   -1.86  ...    220.78    345.49   1.02
+Lambda_block[4, 0]   0.70  0.47    0.00  ...    209.66    254.40   1.01
+Lambda_block[4, 1]   1.39  0.78    0.00  ...    167.79    223.79   1.02
+Lambda_block[5, 0]  -1.30  0.63   -2.54  ...    267.68    347.88   1.02
+Lambda_block[5, 1]  -0.65  0.63   -1.78  ...    158.32    277.01   1.02
+Lambda_block[6, 0]  -1.66  0.95   -3.82  ...     99.60     36.86   1.01
+Lambda_block[6, 1]   0.21  0.91   -1.52  ...    125.58     41.25   1.02
+Lambda_block[7, 0]  -0.04  0.44   -0.81  ...    217.13     86.27   1.01
+Lambda_block[7, 1]   0.19  0.46   -0.67  ...    199.11    111.67   1.01
+Lambda_block[8, 0]  -0.58  0.50   -1.54  ...    107.91     43.01   1.02
+Lambda_block[8, 1]   0.44  0.69   -0.80  ...    164.26     53.85   1.01
+Lambda_block[9, 0]  -0.80  0.64   -2.08  ...    155.11    166.29   1.01
+Lambda_block[9, 1]  -1.38  0.78   -2.94  ...    132.44     79.38   1.02
+Lambda_block[10, 0] -0.86  0.57   -2.02  ...    109.41     38.99   1.01
+Lambda_block[10, 1]  0.01  0.65   -1.15  ...    131.06     46.49   1.01
+Lambda_block[11, 0]  0.06  0.42   -0.74  ...    206.28    400.45   1.01
+Lambda_block[11, 1] -0.55  0.45   -1.38  ...    230.65    465.24   1.01
+Lambda_block[12, 0] -1.17  0.51   -2.22  ...    354.18    312.26   1.01
+Lambda_block[12, 1] -0.48  0.54   -1.45  ...    226.00    854.93   1.01
+Lambda_block[13, 0]  1.11  0.72   -0.17  ...    238.27    516.48   1.01
+Lambda_block[13, 1]  1.60  0.87    0.15  ...    223.52    100.60   1.01
+Lambda_block[14, 0]  0.98  0.53    0.09  ...    144.62     69.71   1.00
+Lambda_block[14, 1]  0.02  0.51   -0.94  ...    215.99    104.60   1.01
+Lambda_block[15, 0] -1.10  0.55   -2.14  ...    310.83    519.32   1.01
+Lambda_block[15, 1] -0.62  0.59   -1.87  ...    144.50    354.25   1.02
+Lambda_block[16, 0] -1.76  1.06   -4.10  ...     60.38     34.29   1.04
+Lambda_block[16, 1]  0.73  1.12   -1.52  ...    117.75     45.93   1.03
+Lambda_block[17, 0]  0.06  0.38   -0.66  ...    432.02    865.06   1.00
+Lambda_block[17, 1] -0.32  0.41   -1.16  ...    502.91    607.66   1.01
+
+[36 rows x 9 columns]
+#+end_example
+
+
+#+begin_src python :results output :session :exports both
+# alpha
+f = out_dir + "alpha_ref.png"
+fig, ax = plt.subplots(figsize=(6, 6))
+ax.scatter(alpha_target, alpha_est["mean"], c=".3")
+ax.axline((1, 1), slope=1, ls="--", c=".3")
+ax.set_title("alpha")
+fig.savefig(f)
+
+# beta
+f = out_dir + "beta_ref.png"
+fig, ax = plt.subplots(figsize=(6, 6))
+ax.scatter(beta_target.flatten(), beta_est["mean"], c=".3")
+ax.axline((1, 1), slope=1, ls="--", c=".3")
+ax.set_title("beta")
+fig.savefig(f)
+
+# W
+f = out_dir + "W_ref.png"
+fig, ax = plt.subplots(figsize=(6, 6))
+ax.scatter(W_target.flatten(), W_est["mean"], c=".3")
+ax.axline((1, 1), slope=1, ls="--", c=".3")
+ax.set_title("W")
+fig.savefig(f)
+
+# lambda
+f = out_dir + "lambda_ref.png"
+fig, ax = plt.subplots(figsize=(6, 6))
+ax.scatter(lambda_target.flatten(), lambda_est["mean"], c=".3")
+ax.axline((1, 1), slope=1, ls="--", c=".3")
+ax.set_title("lambda")
+fig.savefig(f)
+
+# W_lambda
+W_lambda_est = np.matmul(
+    np.asarray(W_est["mean"]).reshape(n_sites, n_q),
+    np.asarray(lambda_est["mean"]).reshape(n_species, n_q).transpose())
+f = out_dir + "W_lambda_ref.png"
+fig, ax = plt.subplots(figsize=(6, 6))
+ax.scatter(Wlambda_target.flatten(), W_lambda_est.flatten(), c=".3")
+ax.axline((1, 1), slope=1, ls="--", c=".3")
+ax.set_title("W_lambda")
+fig.savefig(f)
+#+end_src
+
+#+RESULTS:
+
+#+begin_src python :results file :session :exports both
+ofile = out_dir + "no_rotation_invariance.png"
+ax = az.plot_pair(ref_trace, var_names="Lambda_block",
+                  coords={"Lambda_block_dim_0": j_hat},
+                  scatter_kwargs={'alpha': 0.25})
+
+ax.set_xlabel("");
+ax.set_ylabel("");
+plt.savefig(ofile)
+ofile
+#+end_src
+
+#+RESULTS:
+[[file:outputs/simulated-data/no_rotation_invariance.png]]
+
+* Environment setup and test :noexport:
+
+#+BEGIN_SRC python :results output
+import sys
+print(sys.executable)
+#+END_SRC
+
+#+RESULTS:
+: /home/ghislain/.pyenv/versions/miniconda3-latest/envs/JSDM-PyMC/bin/python
+
+# EOF

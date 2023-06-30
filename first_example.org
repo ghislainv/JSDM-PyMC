@@ -1,0 +1,681 @@
+# -*- mode: org -*-
+# -*- coding: utf-8 -*-
+# -*- org-src-preserve-indentation: t; org-edit-src-content: 0; -*-
+
+# ==============================================================================
+# author          :Ghislain Vieilledent
+# email           :ghislain.vieilledent@cirad.fr, ghislainv@gmail.com
+# web             :https://ecology.ghislainv.fr
+# license         :GPLv3
+# ==============================================================================
+
+#+title: JSDM with latent variables in Python with PyMC
+#+author: Ghislain Vieilledent
+#+email: ghislain.vieilledent@cirad.fr
+
+#+LANGUAGE: en
+#+TAGS: Blog(B) noexport(n) Stats(S)
+#+TAGS: Ecology(E) R(R) OrgMode(O) Python(P)
+#+OPTIONS: H:3 num:t toc:t \n:nil @:t ::t |:t ^:{} -:t f:t *:t <:t tex:t
+#+EXPORT_SELECT_TAGS: export
+#+EXPORT_EXCLUDE_TAGS: noexport
+
+# HTML themes
+#+HTML_DOCTYPE: html5
+#+OPTIONS: html-postamble:nil html-style:nil html-scripts:nil html5-fancy:t
+#+HTML_HEAD: <link rel="stylesheet" type="text/css" href="style/worg.css"/>
+
+# For math display
+#+LATEX_HEADER: \usepackage{amsfonts}
+#+LATEX_HEADER: \usepackage{unicode-math}
+
+#+PROPERTY: header-args :eval never-export
+
+* Reference
+
+We adapted the [[https://austinrochford.com/posts/2021-07-05-factor-analysis-pymc3.html][tutorial]] by Austin Rochford on Bayesian factor analysis.
+
+* Installing PyMC in a Python virtual environment
+
+The best way to install the package is to create a Python virtual environment, for example using =conda=. You first need to have [[https://docs.conda.io/en/latest/miniconda.html][miniconda3]] installed. Then, create a [[https://docs.conda.io/projects/conda/en/latest/user-guide/tasks/manage-environments.html][conda environment]] and install the PyMC package with the following commands:
+
+#+begin_src shell :eval no
+conda create --name JSDM-PyMC -c conda-forge python=3.9
+conda activate JSDM-PyMC
+conda install -c conda-forge mamba
+mamba install -c conda-forge "pymc>=4"
+#+end_src
+
+To deactivate and delete the conda environment, use the following commands:
+
+#+begin_src shell :eval no
+conda deactivate
+conda env remove --name JSDM-PyMC
+#+end_src
+
+* Import libraries
+
+#+begin_src python :results output :session :exports both
+import sys
+
+import arviz as az
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import cloudpickle
+import pymc as pm
+import pytensor.tensor as pt
+
+print(f"Running on PyMC v{pm.__version__}")
+#+end_src
+
+#+RESULTS:
+: Running on PyMC v5.0.2
+
+* Functions
+
+#+begin_src python :results output :session :exports both
+def inv_logit(p):
+    return 1. / (1. + np.exp(-p))
+#+end_src
+
+#+RESULTS:
+
+* Simulating data
+
+#+begin_src python :results output :session :exports both
+# Set seed for repeatability
+SEED = 1234
+rng = np.random.default_rng(SEED)
+
+# Number of sites and species
+n_sites = 100
+n_species = 30
+# Number of explanatory variables (including intercept)
+n_p = 2
+# Number of latent variables
+n_q = 2
+
+# Ecological variables
+Int = np.array([1] * n_sites)
+x = rng.normal(0, 1, size=n_sites * (n_p - 1))
+X = np.concatenate((Int, x)).reshape(n_sites, n_p, order="F")
+print("X.shape:")
+print(X.shape)
+print("\nX[:5,]:")
+print(X[:5,])
+# Number of explicative variables
+n_p = X.shape[1]
+
+# Latent variables
+w = rng.normal(0, 1, size=n_sites * n_q)
+W_target = w.reshape(n_sites, n_q)
+print("\nW.target.shape:")
+print(W_target.shape)
+print("\nW_target[:5,]:")
+print(W_target[:5,])
+# (Check that W_target are independant)
+R_W = np.corrcoef(W_target, rowvar=False)
+print("\nR_W:")
+print(R_W)
+
+# Fixed species effects beta
+beta_target = rng.uniform(-1, 1, n_p * n_species).reshape(n_species, n_p)
+
+# Factor loading lambda
+lambda_target = rng.uniform(-1, 1, n_q * n_species).reshape(n_species, n_q)
+# Decreasing importance of the latent axis
+axis_imp =  np.arange(n_q, 0, -1)
+for i in range(n_q):
+     lambda_target[:, i] = lambda_target[:, i] * axis_imp[i]
+# Constraints on lambda
+for i in range(n_q):
+     lambda_target[i, (i + 1):] = 0
+# Small negative values on diagonal
+lambda_target[np.arange(n_q), np.arange(n_q)] =  np.array([-0.1] * n_q)
+# Large positive values for following species
+for i in range(n_q):
+     lambda_target[n_q + i, i] = n_q - i
+     lambda_target[n_q + i, (i + 1):] = 0
+print("\nlambda_target.shape:")
+print(lambda_target.shape)
+print("\nlambda_target[:6,]:")
+print(lambda_target[:6,])
+
+# Variance of random site effects 
+sigma_alpha_target = 0.5
+# Random site effects
+alpha_target = rng.normal(loc=0, scale=sigma_alpha_target, size=n_sites)
+
+# Probabilities
+Xbeta_target = np.matmul(X, beta_target.transpose())
+Wlambda_target = np.matmul(W_target, lambda_target.transpose()) 
+logit_theta_target = alpha_target[:, np.newaxis] + Xbeta_target + Wlambda_target
+theta_target = inv_logit(logit_theta_target)
+
+# Simulated occurrences
+Y = rng.binomial(n=1, p=theta_target)
+print("\nY.shape:")
+print(Y.shape)
+#+end_src
+
+#+RESULTS:
+#+begin_example
+X.shape:
+(100, 2)
+
+X[:5,]:
+[[ 1.         -1.60383681]
+ [ 1.          0.06409991]
+ [ 1.          0.7408913 ]
+ [ 1.          0.15261919]
+ [ 1.          0.86374389]]
+
+W.target.shape:
+(100, 2)
+
+W_target[:5,]:
+[[ 2.25392546  0.1616142 ]
+ [ 0.83377881 -1.58010947]
+ [ 1.01058529  0.72186786]
+ [-0.58363204  0.68284538]
+ [ 0.50536578  1.00145778]]
+
+R_W:
+[[1.        0.0422377]
+ [0.0422377 1.       ]]
+
+lambda_target.shape:
+(30, 2)
+
+lambda_target[:6,]:
+[[-0.1         0.        ]
+ [-0.96376217 -0.1       ]
+ [ 2.          0.        ]
+ [-1.71765991  1.        ]
+ [ 0.07843035 -0.83177571]
+ [-0.50342304  0.46545259]]
+
+Y.shape:
+(100, 30)
+#+end_example
+
+* Model
+
+#+begin_src python :results output :session :exports both
+Lambda0 = pt.eye(n_species, n_q)
+HALFNORMAL_SCALE = 1. / np.sqrt(1. - 2. / np.pi)
+#+end_src
+
+#+RESULTS:
+
+#+begin_src python :results output :session :exports both
+with pm.Model() as model:
+    # Hyperpriors
+    sigma_alpha = pm.HalfNormal("sigma_alpha", sigma=5.0)
+
+    # Priors
+    # Site random effect
+    alpha = pm.Normal("alpha", mu=0, sigma=sigma_alpha, shape=n_sites)
+    # Latent variables (prior must be N(0, 1))
+    W = pm.Normal("W", mu=0, sigma=1, shape=(n_sites, n_q))
+    # Species effects
+    beta = pm.Normal("beta", mu=0, sigma=10, shape=(n_species, n_p))
+    # Factor loadings with constraints
+    # Diagonal
+    Lambda1 = pt.set_subtensor(
+        Lambda0[np.arange(n_q), np.arange(n_q)],
+        pm.HalfNormal("Lambda_diag", sigma=np.sqrt(10) * HALFNORMAL_SCALE, shape=n_q))
+    # Inferior
+    Lambda2 = pt.set_subtensor(
+        Lambda1[1, 0],
+        pm.Normal("Lambda_inf", mu=0, sigma=np.sqrt(10)))
+    # Block
+    Lambda = pm.Deterministic(
+        "Lambda",
+        pt.set_subtensor(
+            Lambda2[n_q:],
+            pm.Normal("Lambda_block", mu=0, sigma=np.sqrt(10), shape=(n_species-n_q, n_q))))
+
+    # Likelihood
+    Xbeta = pm.math.dot(X, beta.transpose())
+    Wlambda = pm.math.dot(W, Lambda.transpose()) 
+    logit_theta = alpha[:, np.newaxis] + Xbeta + Wlambda
+    obs = pm.Bernoulli("obs", logit_p=logit_theta, observed=Y)
+#+end_src
+
+#+RESULTS:
+
+Parameters for MCMC sampling:
+
+#+begin_src python :results output :session :exports both
+CORES = 2
+SAMPLE_KWARGS = {
+    'draws': 1000,
+    'cores': CORES,
+    'init': 'auto',
+    'tune': 1000,
+    'random_seed': [SEED + i for i in range(CORES)]
+}
+#+end_src
+
+#+RESULTS:
+
+#+begin_src python :results silent :session :exports code
+# Inference button (TM)!
+with model:
+    trace = pm.sample(**SAMPLE_KWARGS)
+#+end_src
+
+Save model with cloudpickle (cf. [[https://github.com/pymc-devs/pymc/issues/5886][link]]).
+
+#+begin_src python :results silent :session :exports both
+out_dir = "outputs/first_example/"
+with open(out_dir + "model_trace.pkl", "wb") as f:
+     model_trace_dump = cloudpickle.dumps({'model': model, 'trace': trace})
+     f.write(model_trace_dump)
+#+end_src
+
+Then, model results can be loaded with the following code:
+
+#+begin_src python :eval no :exports code
+f = open(out_dir + "model_trace.pkl", "rb")
+model_trace = cloudpickle.loads(f.read())
+#+end_src
+
+* Results
+
+Plot traces.
+
+#+begin_src python :results file :session :exports both
+ofile = out_dir + "trace.png"
+with model:
+    axes = az.plot_trace(trace, var_names=["alpha", "beta", "sigma_alpha"])
+fig = axes.ravel()[0].figure
+fig.savefig(ofile)
+ofile
+#+end_src
+
+#+ATTR_HTML: :width 600px
+#+RESULTS:
+[[file:outputs/first_example/trace.png]]
+
+Parameter estimates.
+
+#+begin_src python :results output :session :exports both
+with model:
+    summary = az.summary(trace, var_names=["alpha", "beta", "sigma_alpha"], round_to=2)
+summary.to_csv(out_dir + "model_summary.txt")
+#+end_src
+
+#+RESULTS:
+
+#+begin_src python :results output :session :exports both
+with model:
+    alpha_est = az.summary(trace, var_names=["alpha"], round_to=2)
+    beta_est = az.summary(trace, var_names=["beta"], round_to=2)
+    lambda_est = az.summary(trace, var_names=["Lambda"], round_to=2)
+    W_est = az.summary(trace, var_names=["W"], round_to=2)
+print(lambda_est)
+#+end_src
+
+#+RESULTS:
+#+begin_example
+/home/ghislain/.pyenv/versions/miniconda3-latest/envs/JSDM-PyMC/lib/python3.9/site-packages/arviz/stats/diagnostics.py:584: RuntimeWarning: invalid value encountered in scalar divide
+  (between_chain_variance / within_chain_variance + num_samples - 1) / (num_samples)
+               mean    sd  hdi_3%  hdi_97%  mcse_mean  mcse_sd  ess_bulk  ess_tail  r_hat
+Lambda[0, 0]   0.83  0.40    0.10     1.50       0.04     0.03     67.33    155.38   1.04
+Lambda[0, 1]   0.00  0.00    0.00     0.00       0.00     0.00   2000.00   2000.00    NaN
+Lambda[1, 0]   0.27  0.65   -1.03     1.42       0.22     0.16      9.46     24.70   1.18
+Lambda[1, 1]   1.21  0.44    0.43     2.10       0.03     0.02    216.48    171.19   1.00
+Lambda[2, 0]   0.02  0.90   -1.54     1.87       0.32     0.23      7.98     33.12   1.21
+Lambda[2, 1]  -1.86  0.56   -2.94    -0.85       0.06     0.04     93.55    147.81   1.02
+Lambda[3, 0]   2.22  1.32   -0.50     4.72       0.44     0.32      9.43     25.09   1.17
+Lambda[3, 1]   2.13  1.19   -0.19     4.59       0.34     0.24     12.04     52.42   1.13
+Lambda[4, 0]  -1.39  0.60   -2.64    -0.42       0.06     0.05     82.36     95.89   1.02
+Lambda[4, 1]   0.50  0.73   -0.95     1.89       0.26     0.19      8.39     26.61   1.19
+Lambda[5, 0]   0.43  0.37   -0.28     1.12       0.05     0.03     56.91    607.20   1.04
+Lambda[5, 1]   0.18  0.36   -0.47     0.87       0.06     0.04     36.27    408.85   1.05
+Lambda[6, 0]   1.38  1.11   -0.85     3.41       0.44     0.32      7.17     25.31   1.23
+Lambda[6, 1]   2.09  0.84    0.41     3.64       0.14     0.10     35.72     54.93   1.05
+Lambda[7, 0]  -0.87  0.93   -2.49     1.05       0.35     0.26      7.67     25.20   1.22
+Lambda[7, 1]  -1.80  0.63   -3.12    -0.71       0.11     0.08     36.65     64.21   1.05
+Lambda[8, 0]   0.62  0.52   -0.38     1.59       0.11     0.08     20.74    101.70   1.08
+Lambda[8, 1]  -0.76  0.47   -1.58     0.19       0.13     0.09     13.26     34.21   1.12
+Lambda[9, 0]  -0.81  0.60   -1.83     0.48       0.21     0.15      8.78     29.38   1.18
+Lambda[9, 1]  -0.98  0.52   -1.96    -0.01       0.11     0.08     19.95     74.91   1.08
+Lambda[10, 0]  1.05  0.73   -0.27     2.49       0.22     0.16     10.69     51.21   1.14
+Lambda[10, 1] -1.35  0.67   -2.55     0.05       0.22     0.16      9.87     25.32   1.16
+Lambda[11, 0] -1.20  0.58   -2.32    -0.07       0.17     0.12     12.85     35.86   1.12
+Lambda[11, 1] -0.72  0.63   -1.93     0.48       0.20     0.14     10.04     63.52   1.16
+Lambda[12, 0]  2.11  2.20   -1.75     6.56       0.75     0.55      8.42     49.87   1.19
+Lambda[12, 1] -4.67  1.84   -8.03    -0.95       0.52     0.38     11.87     22.98   1.14
+Lambda[13, 0] -1.53  0.69   -2.91    -0.28       0.16     0.11     18.55     32.89   1.10
+Lambda[13, 1] -0.72  0.78   -2.30     0.73       0.25     0.19      9.05     34.80   1.17
+Lambda[14, 0]  0.44  0.56   -0.67     1.47       0.19     0.14      9.47     28.45   1.17
+Lambda[14, 1]  0.94  0.41    0.13     1.66       0.04     0.03    122.35    168.18   1.02
+Lambda[15, 0]  0.21  0.82   -1.37     1.73       0.29     0.21      8.34     30.06   1.20
+Lambda[15, 1]  1.55  0.51    0.58     2.50       0.03     0.02    238.78    158.57   1.00
+Lambda[16, 0]  0.01  1.15   -2.27     2.12       0.44     0.33      6.99     25.51   1.23
+Lambda[16, 1] -2.46  0.73   -3.92    -1.21       0.07     0.05     93.72    160.65   1.02
+Lambda[17, 0]  1.41  0.86   -0.41     2.93       0.31     0.22      8.33     28.36   1.19
+Lambda[17, 1]  1.41  0.76    0.03     2.96       0.20     0.14     14.93     64.75   1.11
+Lambda[18, 0]  0.63  0.44   -0.13     1.50       0.08     0.06     28.61    198.05   1.05
+Lambda[18, 1] -0.50  0.43   -1.35     0.30       0.12     0.09     12.78     21.37   1.12
+Lambda[19, 0]  0.69  0.60   -0.48     1.80       0.16     0.12     13.41     94.33   1.11
+Lambda[19, 1] -1.00  0.55   -2.01     0.12       0.16     0.12     11.39     29.82   1.14
+Lambda[20, 0]  1.78  0.71    0.60     3.15       0.07     0.05     74.74     98.53   1.03
+Lambda[20, 1]  0.14  0.80   -1.34     1.70       0.28     0.21      8.28     27.62   1.20
+Lambda[21, 0] -1.46  0.72   -2.85    -0.12       0.17     0.13     16.03     33.37   1.11
+Lambda[21, 1] -0.70  0.71   -2.00     0.69       0.22     0.16     10.07     28.60   1.16
+Lambda[22, 0]  0.77  1.05   -1.44     2.72       0.40     0.30      7.15     25.85   1.23
+Lambda[22, 1]  2.06  0.70    0.81     3.45       0.08     0.06     73.43     62.98   1.02
+Lambda[23, 0] -0.44  0.74   -1.71     1.07       0.27     0.20      7.75     28.36   1.20
+Lambda[23, 1] -1.42  0.48   -2.42    -0.57       0.04     0.03    129.78    129.65   1.01
+Lambda[24, 0]  0.59  1.86   -3.48     3.80       0.72     0.54      6.87     28.11   1.25
+Lambda[24, 1]  3.92  1.17    1.91     6.31       0.09     0.06    150.46    165.50   1.01
+Lambda[25, 0]  0.36  0.53   -0.66     1.33       0.17     0.12     10.60     26.78   1.15
+Lambda[25, 1]  0.82  0.39    0.17     1.62       0.03     0.02    196.00    239.01   1.01
+Lambda[26, 0]  0.11  0.77   -1.33     1.58       0.28     0.20      8.10     31.02   1.20
+Lambda[26, 1]  1.50  0.48    0.64     2.42       0.04     0.03    141.58    260.66   1.02
+Lambda[27, 0] -0.99  0.70   -2.26     0.46       0.24     0.18      9.19     23.52   1.17
+Lambda[27, 1] -1.14  0.60   -2.20     0.05       0.14     0.10     18.27     69.36   1.09
+Lambda[28, 0]  0.47  0.47   -0.35     1.48       0.13     0.09     13.70     42.24   1.11
+Lambda[28, 1]  0.65  0.38   -0.03     1.36       0.06     0.04     41.11    170.28   1.04
+Lambda[29, 0] -0.40  1.32   -3.35     1.78       0.50     0.37      7.21     34.94   1.23
+Lambda[29, 1]  2.75  0.89    0.97     4.41       0.17     0.12     25.33     41.92   1.07
+#+end_example
+
+* Model validation
+
+
+#+begin_src python :results output :session :exports both
+# alpha
+f = out_dir + "alpha.png"
+fig, ax = plt.subplots(figsize=(6, 6))
+ax.scatter(alpha_target, alpha_est["mean"], c=".3")
+ax.axline((1, 1), slope=1, ls="--", c=".3")
+ax.set_title("alpha")
+fig.savefig(f)
+
+# beta
+f = out_dir + "beta.png"
+fig, ax = plt.subplots(figsize=(6, 6))
+ax.scatter(beta_target.flatten(), beta_est["mean"], c=".3")
+ax.axline((1, 1), slope=1, ls="--", c=".3")
+ax.set_title("beta")
+fig.savefig(f)
+
+# W
+f = out_dir + "W.png"
+fig, ax = plt.subplots(figsize=(6, 6))
+ax.scatter(W_target.flatten(), W_est["mean"], c=".3")
+ax.axline((1, 1), slope=1, ls="--", c=".3")
+ax.set_title("W")
+fig.savefig(f)
+
+# lambda
+f = out_dir + "lambda.png"
+fig, ax = plt.subplots(figsize=(6, 6))
+ax.scatter(lambda_target.flatten(), lambda_est["mean"], c=".3")
+ax.axline((1, 1), slope=1, ls="--", c=".3")
+ax.set_title("lambda")
+fig.savefig(f)
+
+# W_lambda
+W_lambda_est = np.matmul(
+    np.asarray(W_est["mean"]).reshape(n_sites, n_q),
+    np.asarray(lambda_est["mean"]).reshape(n_species, n_q).transpose())
+f = out_dir + "W_lambda.png"
+fig, ax = plt.subplots(figsize=(6, 6))
+ax.scatter(Wlambda_target.flatten(), W_lambda_est.flatten(), c=".3")
+ax.axline((1, 1), slope=1, ls="--", c=".3")
+ax.set_title("W_lambda")
+fig.savefig(f)
+#+end_src
+
+#+RESULTS:
+
+* Breaking reflection invariance
+
+We fix the sign of the factor loading that has the largest $\hat{R}$ statistic in one of its columns, as this will be the loading with the most extreme reflection symmetry.
+
+#+begin_src python :results output :session :exports both
+j_hat, = (az.rhat(trace, var_names="Lambda_block")
+            .max(dim="Lambda_block_dim_1")
+            .argmax(dim="Lambda_block_dim_0")
+            .to_array()
+            .data)
+print(j_hat)
+#+end_src
+
+#+RESULTS:
+: 22
+
+#+begin_src python :results file :session :exports both
+ofile = out_dir + "rotation_invariance_bimodal.png"
+ax = az.plot_pair(trace, var_names="Lambda_block",
+                  coords={"Lambda_block_dim_0": j_hat},
+                  scatter_kwargs={'alpha': 0.25})
+
+ax.set_xlabel("");
+ax.set_ylabel("");
+plt.savefig(ofile)
+ofile
+#+end_src
+
+#+RESULTS:
+[[file:outputs/first_example/rotation_invariance_bimodal.png]]
+
+#+begin_src python :results output :session :exports both
+target_sign = np.sign(
+    trace["posterior"]["Lambda_block"]
+    [0, :, j_hat]
+    .mean(dim="draw")
+    .data
+)
+print(target_sign)
+#+end_src
+
+#+RESULTS:
+: [1. 1.]
+
+#+begin_src python :results output :session :exports both
+with pm.Model() as ref_model:
+    # Hyperpriors
+    sigma_alpha = pm.HalfNormal("sigma_alpha", sigma=5.0)
+
+    # Priors
+    # Site random effect
+    alpha = pm.Normal("alpha", mu=0, sigma=sigma_alpha, shape=n_sites)
+    # Species effects
+    beta = pm.Normal("beta", mu=0, sigma=1, shape=(n_species, n_p))
+    # Factor loadings with constraints
+    # Diagonal
+    Lambda1 = pt.set_subtensor(
+        Lambda0[np.arange(n_q), np.arange(n_q)],
+        pm.HalfNormal("Lambda_diag", sigma=np.sqrt(10) * HALFNORMAL_SCALE, shape=n_q))
+    # Inferior
+    Lambda2 = pt.set_subtensor(
+        Lambda1[1, 0],
+        pm.Normal("Lambda_inf", mu=0, sigma=np.sqrt(10)))
+    # Block
+    Lambda_block_ = pm.Normal("Lambda_block_", mu=0,
+                              sigma=np.sqrt(10), shape=(n_species-n_q, n_q))
+    Lambda_block = pm.Deterministic(
+        "Lambda_block",
+        target_sign * pt.sgn(Lambda_block_[j_hat]) * Lambda_block_
+    )
+    Lambda = pm.Deterministic("Lambda",
+                              pt.set_subtensor(
+                                  Lambda2[n_q:],
+                                  Lambda_block))
+    # Latent variables (prior must be N(0, 1))
+    W_ = pm.Normal("W_", mu=0, sigma=1, shape=(n_sites, n_q))
+    W = pm.Deterministic(
+        "W", target_sign * pt.sgn(Lambda_block_[j_hat]) * W_
+    )
+    
+    # Likelihood
+    Xbeta = pm.math.dot(X, beta.transpose())
+    Wlambda = pm.math.dot(W, Lambda.transpose()) 
+    logit_theta = alpha[:, np.newaxis] + Xbeta + Wlambda
+    obs = pm.Bernoulli("obs", logit_p=logit_theta, observed=Y)
+#+end_src
+
+#+RESULTS:
+
+#+begin_src python :results silent :session :exports both
+with ref_model:
+    ref_trace = pm.sample(**SAMPLE_KWARGS)
+#+end_src
+
+#+begin_src python :results output :session :exports both
+with ref_model:
+    alpha_est = az.summary(ref_trace, var_names=["alpha"], round_to=2)
+    beta_est = az.summary(ref_trace, var_names=["beta"], round_to=2)
+    lambda_est = az.summary(ref_trace, var_names=["Lambda"], round_to=2)
+    W_est = az.summary(ref_trace, var_names=["W"], round_to=2)
+print(lambda_est)
+#+end_src
+
+#+RESULTS:
+#+begin_example
+/home/ghislain/.pyenv/versions/miniconda3-latest/envs/JSDM-PyMC/lib/python3.9/site-packages/arviz/stats/diagnostics.py:584: RuntimeWarning: invalid value encountered in scalar divide
+  (between_chain_variance / within_chain_variance + num_samples - 1) / (num_samples)
+               mean    sd  hdi_3%  hdi_97%  mcse_mean  mcse_sd  ess_bulk  ess_tail  r_hat
+Lambda[0, 0]   0.81  0.39    0.07     1.49       0.02     0.02    223.15    544.35   1.03
+Lambda[0, 1]   0.00  0.00    0.00     0.00       0.00     0.00   2000.00   2000.00    NaN
+Lambda[1, 0]   0.71  0.51   -0.24     1.64       0.12     0.09     17.83    410.37   1.12
+Lambda[1, 1]   1.09  0.44    0.27     1.92       0.07     0.05     34.51    322.62   1.07
+Lambda[2, 0]  -0.60  0.73   -1.95     0.73       0.17     0.12     18.25    231.99   1.13
+Lambda[2, 1]  -1.81  0.60   -2.95    -0.66       0.06     0.04     98.80    320.20   1.05
+Lambda[3, 0]   2.79  0.95    1.22     4.70       0.08     0.06    123.34    206.75   1.04
+Lambda[3, 1]   1.36  1.12   -0.88     3.26       0.33     0.24     11.73    160.15   1.18
+Lambda[4, 0]  -1.15  0.60   -2.37    -0.14       0.05     0.04    120.97    274.71   1.05
+Lambda[4, 1]   0.97  0.59   -0.21     2.01       0.14     0.10     16.81    110.02   1.11
+Lambda[5, 0]   0.49  0.35   -0.13     1.14       0.01     0.01    902.63   1172.65   1.00
+Lambda[5, 1]   0.05  0.34   -0.59     0.69       0.03     0.02    104.12   1254.48   1.03
+Lambda[6, 0]   1.97  0.80    0.59     3.44       0.19     0.14     17.30    223.22   1.10
+Lambda[6, 1]   1.56  0.87    0.02     3.23       0.18     0.13     20.13     88.39   1.15
+Lambda[7, 0]  -1.48  0.70   -2.80    -0.25       0.16     0.12     17.56    160.63   1.10
+Lambda[7, 1]  -1.48  0.71   -2.81    -0.16       0.18     0.13     15.72    166.30   1.15
+Lambda[8, 0]   0.30  0.48   -0.61     1.20       0.10     0.07     20.70    314.10   1.09
+Lambda[8, 1]  -0.90  0.39   -1.67    -0.23       0.02     0.01    557.01   1066.47   1.00
+Lambda[9, 0]  -1.14  0.50   -2.05    -0.21       0.06     0.04     70.83    300.46   1.04
+Lambda[9, 1]  -0.69  0.55   -1.64     0.42       0.13     0.10     17.42    148.89   1.14
+Lambda[10, 0]  0.55  0.71   -0.81     1.84       0.18     0.13     14.72    215.36   1.15
+Lambda[10, 1] -1.62  0.54   -2.62    -0.63       0.03     0.02    301.22    265.46   1.01
+Lambda[11, 0] -1.42  0.51   -2.44    -0.59       0.02     0.02    443.58    661.65   1.00
+Lambda[11, 1] -0.31  0.60   -1.39     0.85       0.14     0.10     19.82    170.82   1.13
+Lambda[12, 0]  0.46  1.88   -3.00     3.84       0.55     0.40     11.87    150.79   1.20
+Lambda[12, 1] -5.11  1.49   -7.78    -2.41       0.06     0.04    737.56   1011.92   1.01
+Lambda[13, 0] -1.72  0.60   -2.82    -0.69       0.03     0.02    381.16    886.55   1.01
+Lambda[13, 1] -0.21  0.73   -1.49     1.10       0.18     0.13     16.10    186.27   1.16
+Lambda[14, 0]  0.75  0.46   -0.16     1.57       0.08     0.06     31.89    299.22   1.06
+Lambda[14, 1]  0.77  0.42   -0.05     1.53       0.05     0.04     59.88     71.27   1.06
+Lambda[15, 0]  0.69  0.63   -0.51     1.86       0.18     0.13     12.66     75.22   1.15
+Lambda[15, 1]  1.41  0.53    0.39     2.41       0.06     0.04     61.43    293.88   1.06
+Lambda[16, 0] -0.84  0.92   -2.56     0.80       0.27     0.19     12.17    125.81   1.17
+Lambda[16, 1] -2.36  0.74   -3.83    -1.03       0.06     0.05    124.26    189.73   1.05
+Lambda[17, 0]  1.90  0.69    0.79     3.32       0.08     0.06     67.43    192.75   1.04
+Lambda[17, 1]  0.92  0.79   -0.62     2.33       0.21     0.15     14.96    146.09   1.16
+Lambda[18, 0]  0.43  0.43   -0.35     1.21       0.07     0.05     38.87    369.69   1.07
+Lambda[18, 1] -0.69  0.36   -1.38    -0.06       0.02     0.01    448.26    701.73   1.01
+Lambda[19, 0]  0.30  0.53   -0.63     1.32       0.14     0.10     13.69    182.15   1.12
+Lambda[19, 1] -1.20  0.44   -2.04    -0.43       0.02     0.01    741.61    994.24   1.01
+Lambda[20, 0]  1.72  0.63    0.67     2.93       0.04     0.03    256.99    711.80   1.02
+Lambda[20, 1] -0.40  0.67   -1.63     0.77       0.17     0.12     17.13    108.41   1.15
+Lambda[21, 0] -1.55  0.55   -2.54    -0.59       0.03     0.02    419.72   1081.37   1.00
+Lambda[21, 1] -0.21  0.65   -1.34     0.99       0.16     0.12     17.18    141.81   1.16
+Lambda[22, 0]  1.39  0.76   -0.01     2.80       0.19     0.14     16.40     82.95   1.13
+Lambda[22, 1]  1.66  0.72    0.26     3.00       0.17     0.12     18.35     80.85   1.12
+Lambda[23, 0] -0.89  0.58   -1.95     0.19       0.13     0.10     18.97    208.47   1.10
+Lambda[23, 1] -1.22  0.54   -2.29    -0.24       0.09     0.06     36.91    264.59   1.09
+Lambda[24, 0]  1.86  1.24    0.00     3.97       0.36     0.26     12.41    139.34   1.18
+Lambda[24, 1]  3.48  1.13    1.39     5.53       0.22     0.16     24.00    168.65   1.09
+Lambda[25, 0]  0.65  0.42   -0.15     1.42       0.07     0.05     38.93    583.02   1.06
+Lambda[25, 1]  0.69  0.41   -0.06     1.51       0.05     0.03     76.40    367.76   1.06
+Lambda[26, 0]  0.65  0.61   -0.41     1.84       0.16     0.12     13.60    181.70   1.15
+Lambda[26, 1]  1.46  0.52    0.53     2.46       0.10     0.07     29.21    126.82   1.06
+Lambda[27, 0] -1.30  0.53   -2.26    -0.31       0.07     0.05     49.05    204.84   1.05
+Lambda[27, 1] -0.77  0.61   -1.78     0.44       0.11     0.08     31.76    226.98   1.11
+Lambda[28, 0]  0.68  0.40   -0.09     1.47       0.03     0.02    175.07    654.88   1.03
+Lambda[28, 1]  0.51  0.39   -0.26     1.21       0.07     0.05     27.64    271.75   1.08
+Lambda[29, 0]  0.59  1.08   -1.41     2.47       0.35     0.26      9.53    109.73   1.20
+Lambda[29, 1]  2.85  0.83    1.44     4.42       0.04     0.03    444.84    755.25   1.01
+#+end_example
+
+#+begin_src python :results output :session :exports both
+# alpha
+f = out_dir + "alpha_ref.png"
+fig, ax = plt.subplots(figsize=(6, 6))
+ax.scatter(alpha_target, alpha_est["mean"], c=".3")
+ax.axline((1, 1), slope=1, ls="--", c=".3")
+ax.set_title("alpha")
+fig.savefig(f)
+
+# beta
+f = out_dir + "beta_ref.png"
+fig, ax = plt.subplots(figsize=(6, 6))
+ax.scatter(beta_target.flatten(), beta_est["mean"], c=".3")
+ax.axline((1, 1), slope=1, ls="--", c=".3")
+ax.set_title("beta")
+fig.savefig(f)
+
+# W
+f = out_dir + "W_ref.png"
+fig, ax = plt.subplots(figsize=(6, 6))
+ax.scatter(W_target.flatten(), W_est["mean"], c=".3")
+ax.axline((1, 1), slope=1, ls="--", c=".3")
+ax.set_title("W")
+fig.savefig(f)
+
+# lambda
+f = out_dir + "lambda_ref.png"
+fig, ax = plt.subplots(figsize=(6, 6))
+ax.scatter(lambda_target.flatten(), lambda_est["mean"], c=".3")
+ax.axline((1, 1), slope=1, ls="--", c=".3")
+ax.set_title("lambda")
+fig.savefig(f)
+
+# W_lambda
+W_lambda_est = np.matmul(
+    np.asarray(W_est["mean"]).reshape(n_sites, n_q),
+    np.asarray(lambda_est["mean"]).reshape(n_species, n_q).transpose())
+f = out_dir + "W_lambda_ref.png"
+fig, ax = plt.subplots(figsize=(6, 6))
+ax.scatter(Wlambda_target.flatten(), W_lambda_est.flatten(), c=".3")
+ax.axline((1, 1), slope=1, ls="--", c=".3")
+ax.set_title("W_lambda")
+fig.savefig(f)
+#+end_src
+
+#+RESULTS:
+
+#+begin_src python :results file :session :exports both
+ofile = out_dir + "no_rotation_invariance.png"
+ax = az.plot_pair(ref_trace, var_names="Lambda_block",
+                  coords={"Lambda_block_dim_0": j_hat},
+                  scatter_kwargs={'alpha': 0.25})
+
+ax.set_xlabel("");
+ax.set_ylabel("");
+plt.savefig(ofile)
+ofile
+#+end_src
+
+#+RESULTS:
+[[file:outputs/first_example/no_rotation_invariance.png]]
+
+* Environment setup and test :noexport:
+
+#+BEGIN_SRC python :results output
+import sys
+print(sys.executable)
+#+END_SRC
+
+#+RESULTS:
+: /home/ghislain/.pyenv/versions/miniconda3-latest/envs/JSDM-PyMC/bin/python
+
+# EOF

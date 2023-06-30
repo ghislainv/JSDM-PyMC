@@ -1,0 +1,999 @@
+# -*- mode: org -*-
+# -*- coding: utf-8 -*-
+# -*- org-src-preserve-indentation: t; org-edit-src-content: 0; -*-
+
+# ==============================================================================
+# author          :Ghislain Vieilledent
+# email           :ghislain.vieilledent@cirad.fr, ghislainv@gmail.com
+# web             :https://ecology.ghislainv.fr
+# license         :GPLv3
+# ==============================================================================
+
+#+title: Ordering species to correct for ineffective constraints in joint species distribution models with latent variables
+#+author: Ghislain Vieilledent
+#+email: ghislain.vieilledent@cirad.fr
+
+#+LANGUAGE: en
+#+TAGS: Blog(B) noexport(n) Stats(S)
+#+TAGS: Ecology(E) R(R) OrgMode(O) Python(P)
+#+OPTIONS: H:3 num:t toc:t \n:nil @:t ::t |:t ^:{} -:t f:t *:t <:t tex:t
+#+OPTIONS: author:t email:t
+#+EXPORT_SELECT_TAGS: export
+#+EXPORT_EXCLUDE_TAGS: noexport
+
+# HTML themes
+#+HTML_DOCTYPE: html5
+#+OPTIONS: html-style:nil html-scripts:nil html5-fancy:t
+#+OPTIONS: html-postamble:nil html-preamble:nil
+#+HTML_HEAD: <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xz/fonts@1/serve/inter.css">
+#+HTML_HEAD: <link rel="stylesheet" href="style/new.css">
+#+HTML_HEAD: <link rel="stylesheet" href="style/mycss.css">
+# #+HTML_HEAD: <link rel="stylesheet" type="text/css" href="style/worg.css"/>
+
+#+PROPERTY: header-args :eval never-export
+
+* Installing PyMC in a Python virtual environment
+
+The best way to install the package is to create a Python virtual environment, for example using =conda=. You first need to have [[https://docs.conda.io/en/latest/miniconda.html][miniconda3]] installed. Then, create a [[https://docs.conda.io/projects/conda/en/latest/user-guide/tasks/manage-environments.html][conda environment]] and install the PyMC package with the following commands:
+
+#+begin_src shell :eval no
+conda create --name JSDM-PyMC -c conda-forge python=3.9
+conda activate JSDM-PyMC
+conda install -c conda-forge mamba
+mamba install -c conda-forge "pymc>=4"
+conda install -c conda-forge scikit-learn flake8 jedi tabular
+#+end_src
+
+To deactivate and delete the conda environment, use the following commands:
+
+#+begin_src shell :eval no
+conda deactivate
+conda env remove --name JSDM-PyMC
+#+end_src
+
+#+RESULTS:
+
+* Import libraries
+
+#+begin_src python :results output :session :exports both
+import os
+import sys
+
+import arviz as az
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import cloudpickle
+import pymc as pm
+import pytensor.tensor as pt
+from tabulate import tabulate
+
+print(f"Running on PyMC v{pm.__version__}")
+#+end_src
+
+#+RESULTS:
+: Running on PyMC v5.0.2
+
+* Functions
+
+#+begin_src python :results output :session :exports both
+def inv_logit(p):
+    return 1. / (1. + np.exp(-p))
+#+end_src
+
+#+RESULTS:
+
+* Simulating data
+
+#+begin_src python :results output :session :exports both
+# Set seed for repeatability
+SEED = 1234
+rng = np.random.default_rng(SEED)
+
+# Number of sites and species
+n_sites = 100
+n_species = 30
+# Number of explanatory variables (including intercept)
+n_p = 3
+# Number of latent variables
+n_q = 3
+
+# Ecological variables
+Int = np.array([1] * n_sites)
+x = rng.normal(0, 1, size=n_sites * (n_p - 1))
+X = np.concatenate((Int, x)).reshape(n_sites, n_p, order="F")
+print("X.shape:")
+print(X.shape)
+print("\nX[:5,]:")
+print(X[:5,])
+# Number of explicative variables
+n_p = X.shape[1]
+
+# Latent variables
+w = rng.normal(0, 1, size=n_sites * n_q)
+W_target = w.reshape(n_sites, n_q)
+print("\nW.target.shape:")
+print(W_target.shape)
+print("\nW_target[:5,]:")
+print(W_target[:5,])
+# (Check that W_target are independant)
+R_W = np.corrcoef(W_target, rowvar=False)
+print("\nR_W:")
+print(R_W)
+
+# Fixed species effects beta
+beta_target = rng.uniform(-1, 1, n_p * n_species).reshape(n_species, n_p)
+
+# Factor loading lambda
+_lambda_target = rng.uniform(-1, 1, n_q * n_species).reshape(n_species, n_q)
+# Decreasing importance of the latent axis
+axis_imp =  np.arange(n_q, 0, -1)
+lambda_target = _lambda_target * axis_imp[np.newaxis, :]
+# Constraints on lambda
+for i in range(n_q):
+     lambda_target[i, (i + 1):] = 0
+# Small negative values on diagonal
+lambda_target[np.arange(n_q), np.arange(n_q)] =  np.array([-0.1] * n_q)
+# Large positive values for following species
+for i in range(n_q):
+     lambda_target[n_q + i, i] = n_q - i
+     lambda_target[n_q + i, (i + 1):] = 0
+print("\nlambda_target.shape:")
+print(lambda_target.shape)
+print("\nlambda_target[:6,]:")
+print(lambda_target[:6,])
+
+# Variance of random site effects 
+sigma_alpha_target = 0.5
+# Random site effects
+alpha_target = rng.normal(loc=0, scale=sigma_alpha_target, size=n_sites)
+
+# Probabilities
+Xbeta_target = np.matmul(X, beta_target.transpose())
+Wlambda_target = np.matmul(W_target, lambda_target.transpose()) 
+logit_theta_target = alpha_target[:, np.newaxis] + Xbeta_target + Wlambda_target
+theta_target = inv_logit(logit_theta_target)
+
+# Simulated occurrences
+Y = rng.binomial(n=1, p=theta_target)
+print("\nY.shape:")
+print(Y.shape)
+
+# Save data-set
+out_dir = "outputs/sim-data-3lv/"
+with open(out_dir + "data.pkl", "wb") as f:
+     data_dump = cloudpickle.dumps({"Y": Y, "X": X})
+     f.write(data_dump)
+#+end_src
+
+#+RESULTS:
+#+begin_example
+X.shape:
+(100, 3)
+
+X[:5,]:
+[[ 1.         -1.60383681  2.25392546]
+ [ 1.          0.06409991  0.1616142 ]
+ [ 1.          0.7408913   0.83377881]
+ [ 1.          0.15261919 -1.58010947]
+ [ 1.          0.86374389  1.01058529]]
+
+W.target.shape:
+(100, 3)
+
+W_target[:5,]:
+[[ 0.73118867 -0.22964706  2.14411198]
+ [ 0.39714586  0.15946658  0.38766429]
+ [ 1.21467102  0.3130316   0.21977825]
+ [ 0.25134426  1.89918969  0.07872037]
+ [-1.35192047 -0.77074077 -0.4906274 ]]
+
+R_W:
+[[ 1.          0.13194801 -0.09843743]
+ [ 0.13194801  1.          0.18699235]
+ [-0.09843743  0.18699235  1.        ]]
+
+lambda_target.shape:
+(30, 3)
+
+lambda_target[:6,]:
+[[-0.1         0.          0.        ]
+ [ 2.90645404 -0.1         0.        ]
+ [-2.27666772 -1.54762031 -0.1       ]
+ [ 3.          0.          0.        ]
+ [-2.97255492  2.          0.        ]
+ [-0.66112848 -0.75376636  1.        ]]
+
+Y.shape:
+(100, 30)
+#+end_example
+
+Histogram of Wlambda.
+
+#+begin_src python :results file :session :exports both
+ofile = os.path.join(out_dir, "hist_Wlambda.png")
+fig = plt.figure()
+plt.hist(Wlambda_target.flatten(), bins=20)
+fig.savefig(ofile)
+ofile
+#+end_src
+
+#+RESULTS:
+[[file:outputs/sim-data-3lv/hist_Wlambda.png]]
+
+* Model
+
+#+begin_src python :results output :session :exports both
+Lambda0 = pt.eye(n_species, n_q)
+HALFNORMAL_SCALE = 1. / np.sqrt(1. - 2. / np.pi)
+#+end_src
+
+#+RESULTS:
+
+We create a function to expand a packed block triangular matrix. Triangular matrices can be stored with better space efficiency by storing the non-zero values in a one-dimensional array. This function is an adaptation of =pm.expand.packed.triangular=.
+
+#+begin_src python :results output :session :exports both
+def expand_packed_block_triangular(n_species, n_q, packed, diag=None, mtype="pytensor"):
+    # like pm.expand_packed_triangular, but with n_species > n_q.
+    assert mtype in {"pytensor", "numpy"}
+    assert n_species >= n_q
+
+    def set_(M, i_, v_):
+        if mtype == "pytensor":
+            return pt.set_subtensor(M[i_], v_)
+        M[i_] = v_
+        return M
+
+    out = pt.zeros((n_species, n_q), dtype=float) if mtype == "pytensor" else np.zeros((n_species, n_q), dtype=float)
+    if diag is None:
+        idxs = np.tril_indices(n_species, m=n_q)
+        out = set_(out, idxs, packed)
+    else:
+        idxs = np.tril_indices(n_species, k=-1, m=n_q)
+        out = set_(out, idxs, packed)
+        idxs = (np.arange(n_q), np.arange(n_q))
+        out = set_(out, idxs, diag)
+    return out
+#+end_src
+
+#+RESULTS:
+
+We define another function which helps create a diagonal matrix with positive values on the diagonal.
+
+#+begin_src python :results output :session :exports both
+def makeLambda(n_species, n_q, dim_names):
+    # Number of below diagonal factor loadings
+    n_L_packed = int(n_species * n_q - n_q * (n_q - 1) / 2 - n_q)
+    # Diagonal matrix
+    L_diag = pm.HalfNormal("L_diag", sigma=HALFNORMAL_SCALE, shape=n_q)
+    # Packed Lambda
+    L_packed = pm.Normal("L_packed", mu=0, sigma=1, shape=n_L_packed)
+    L = expand_packed_block_triangular(n_species, n_q, L_packed, diag=pt.ones(n_q))
+    Lambda = pm.Deterministic("Lambda", pt.dot(L, pt.diag(L_diag)), dims=dim_names)
+    return Lambda
+#+end_src
+
+#+RESULTS:
+
+#+begin_src python :results output :session :exports both
+with pm.Model() as model:
+    # Hyperpriors
+    sigma_alpha = pm.HalfNormal("sigma_alpha", sigma=1.0)
+    # Priors
+    # Site random effect
+    alpha = pm.Normal("alpha", mu=0, sigma=sigma_alpha, shape=n_sites, dims="sites")
+    # Latent variables
+    W = pm.Normal("W", mu=0, sigma=1, shape=(n_sites, n_q), dims=("sites", "latent_axis"))
+    # Species effects
+    beta = pm.Normal("beta", mu=0, sigma=1, shape=(n_species, n_p), dims=("species", "fixed_effects"))
+    # Factor loadings with constraints
+    Lambda = makeLambda(n_species, n_q, ("species", "latent_axis"))
+    # Likelihood
+    Xbeta = pm.math.dot(X, beta.transpose())
+    Wlambda = pm.math.dot(W, Lambda.transpose()) 
+    logit_theta = alpha[:, np.newaxis] + Xbeta + Wlambda
+    obs = pm.Bernoulli("obs", logit_p=logit_theta, observed=Y)
+#+end_src
+
+#+RESULTS:
+
+Parameters for MCMC sampling:
+
+#+begin_src python :results output :session :exports both
+CORES = 2
+SAMPLE_KWARGS = {
+    'draws': 1000,
+    'cores': CORES,
+    'init': 'auto',
+    'tune': 1000,
+    'random_seed': [SEED + i for i in range(CORES)]
+}
+#+end_src
+
+#+RESULTS:
+
+#+begin_src python :results silent :session :exports code
+# Inference
+with model:
+    trace = pm.sample(**SAMPLE_KWARGS)
+#+end_src
+
+Save model with cloudpickle (cf. [[https://github.com/pymc-devs/pymc/issues/5886][link]]).
+
+#+begin_src python :results silent :session :exports both
+with open(out_dir + "model_trace.pkl", "wb") as f:
+     model_trace_dump = cloudpickle.dumps({'model': model, 'trace': trace})
+     f.write(model_trace_dump)
+#+end_src
+
+Then, model results can be loaded with the following code (set :eval yes):
+
+#+begin_src python :eval no :exports code :eval no
+f = open(out_dir + "model_trace.pkl", "rb")
+model_trace = cloudpickle.loads(f.read())
+#+end_src
+
+* Convergence and model performance
+** Plotting traces
+
+#+begin_src python :results file :session :exports both
+ofile = out_dir + "trace.png"
+with model:
+    axes = az.plot_trace(trace,
+                         var_names=["alpha", "beta",
+                                    "sigma_alpha"])
+fig = axes.ravel()[0].figure
+fig.savefig(ofile)
+ofile
+#+end_src
+
+#+ATTR_HTML: :width 900
+#+RESULTS:
+[[file:outputs/sim-data-3lv/trace.png]]
+
+** Parameter estimates.
+
+#+begin_src python :results silent :session :exports both
+with model:
+    summary = az.summary(trace,
+                         var_names=["alpha", "beta",
+                                    "sigma_alpha"], round_to=2)
+summary.to_csv(out_dir + "model_summary.txt")
+#+end_src
+
+#+RESULTS:
+
+#+begin_src python :results silent :session :exports code
+with model:
+    alpha_est = az.summary(trace, var_names=["alpha"], round_to=2)
+    beta_est = az.summary(trace, var_names=["beta"], round_to=2)
+    lambda_diag_est = az.summary(trace,
+                                 var_names=["L_diag"],
+                                 round_to=2)
+    lambda_offdiag_est = az.summary(trace,
+                                    var_names=["L_packed"],
+                                    round_to=2)
+    lambda_est = az.summary(trace,
+                            var_names=["Lambda"],
+                            round_to=2)
+    W_diag_est = az.summary(trace, var_names=["W"],
+                            coords={"sites": np.arange(n_q),
+                                    "latent_axis": np.arange(n_q)},
+                            round_to=2)
+    W_est = az.summary(trace, var_names=["W"],
+                            round_to=2)
+#+end_src
+
+** Traces for constrained parameters
+*** Factor loadings on the diagonal
+
+#+begin_src python :results file :session :exports both
+ofile = out_dir + "trace_lambda_diag.png"
+with model:
+    axes = az.plot_trace(trace.posterior["L_diag"],
+                         var_names=["L_diag"], compact=False)
+fig = axes.ravel()[0].figure
+fig.savefig(ofile)
+ofile
+#+end_src
+
+#+ATTR_HTML: :width 900
+#+RESULTS:
+[[file:outputs/sim-data-3lv/trace_lambda_diag.png]]
+
+#+begin_src python :results file :session :exports both
+ofile = out_dir + "trace_lambda_0_0.png"
+with model:
+    axes = az.plot_trace(trace,
+                         var_names=["Lambda"],
+                         coords={"species": [0],
+                                 "latent_axis": [0]})
+fig = axes.ravel()[0].figure
+fig.savefig(ofile)
+ofile
+#+end_src
+
+#+ATTR_HTML: :width 900
+#+RESULTS:
+[[file:outputs/sim-data-3lv/trace_lambda_0_0.png]]
+
+For these lambdas, MCMCs do not converge (r_hat >> 1) and posteriors means are far from the target values of -0.1.
+
+#+begin_src python :results value raw :session :exports both
+lambda_diag = lambda_diag_est.loc[:, ["mean", "sd", "r_hat"]]
+lambda_diag["target_value"] = np.diag(lambda_target)
+tabulate(lambda_diag, headers="keys", tablefmt="orgtbl", showindex=True)
+#+end_src
+
+#+RESULTS:
+|           | mean |   sd | r_hat | target_value |
+|-----------+------+------+-------+--------------|
+| L_diag[0] | 0.92 |  0.6 |  1.83 |         -0.1 |
+| L_diag[1] | 1.51 | 1.24 |  1.85 |         -0.1 |
+| L_diag[2] | 1.36 | 0.25 |  1.04 |         -0.1 |
+
+*** Species with high factor loadings
+
+#+begin_src python :results file :session :exports both
+ofile = out_dir + "trace_lambda_high_loadings.png"
+with model:
+    axes = az.plot_trace(trace,
+                         var_names=["Lambda"],
+                         coords={"species": np.arange(3, 6),
+                                 "latent_axis": np.arange(0, 3)},
+                         compact=False)
+fig = axes.ravel()[0].figure
+fig.savefig(ofile)
+ofile
+#+end_src
+
+#+ATTR_HTML: :width 900
+#+RESULTS:
+[[file:outputs/sim-data-3lv/trace_lambda_high_loadings.png]]
+
+#+begin_src python :results file :session :exports both
+ofile = out_dir + "trace_lambda_3_0.png"
+with model:
+    axes = az.plot_trace(trace,
+                         var_names=["Lambda"],
+                         coords={"species": [3],
+                                 "latent_axis": [0]})
+fig = axes.ravel()[0].figure
+fig.savefig(ofile)
+ofile
+#+end_src
+
+#+ATTR_HTML: :width 900
+#+RESULTS:
+[[file:outputs/sim-data-3lv/trace_lambda_3_0.png]]
+
+For species with high factor loadings, MCMCs do not converge (r_hat >> 1) and posteriors means are far from the target values of 3, 2, and 1.
+
+#+begin_src python :results value raw :session :exports both
+lambda_high = lambda_est.loc[["Lambda[3, 0]", "Lambda[4, 1]", "Lambda[5, 2]"], ["mean", "sd", "r_hat"]]
+lambda_high["target_value"] = [lambda_target[3, 0], lambda_target[4, 1], lambda_target[5, 2]]
+tabulate(lambda_high, headers="keys", tablefmt="orgtbl", showindex=True)
+#+end_src
+
+#+RESULTS:
+|              |  mean |   sd | r_hat | target_value |
+|--------------+-------+------+-------+--------------|
+| Lambda[3, 0] |  1.28 | 1.32 |  1.83 |            3 |
+| Lambda[4, 1] | -1.26 | 1.27 |  1.83 |            2 |
+| Lambda[5, 2] | -0.49 | 0.34 |  1.02 |            1 |
+
+** Convergence criteria
+
+We compute the mean r_hat for each category of parameters.
+
+#+begin_src python :results value raw :session :exports both
+# Compute r_hat mean and std
+rhat_alpha_mean = round(alpha_est["r_hat"].mean(), 2)
+rhat_alpha_std = round(alpha_est["r_hat"].std(), 2)
+rhat_beta_mean = round(beta_est["r_hat"].mean(), 2)
+rhat_beta_std = round(beta_est["r_hat"].std(), 2)
+rhat_W_mean = round(W_est["r_hat"].mean(), 2)
+rhat_W_std = round(W_est["r_hat"].std(), 2)
+rhat_lambda_mean = round(lambda_est["r_hat"].mean(), 2)
+rhat_lambda_std = round(lambda_est["r_hat"].std(), 2)
+rhat_lambda_diag_mean = round(lambda_est.loc[["Lambda[0, 0]", "Lambda[1, 1]", "Lambda[2, 2]"], ["r_hat"]]["r_hat"].mean(), 2)
+rhat_lambda_diag_std = round(lambda_est.loc[["Lambda[0, 0]", "Lambda[1, 1]", "Lambda[2, 2]"], ["r_hat"]]["r_hat"].std(), 2)
+rhat_lambda_high_mean = round(lambda_est.loc[["Lambda[3, 0]", "Lambda[4, 1]", "Lambda[5, 2]"], ["r_hat"]]["r_hat"].mean(), 2)
+rhat_lambda_high_std = round(lambda_est.loc[["Lambda[3, 0]", "Lambda[4, 1]", "Lambda[5, 2]"], ["r_hat"]]["r_hat"].std(), 2)
+
+# Build dataframe
+par_names = ["alpha", "beta", "W", "lambda", "lambda_diag", "lambda_high"]
+mean_val = [eval("rhat_" + x + "_mean") for x in par_names]
+std_val = [eval("rhat_" + x + "_std") for x in par_names]
+
+rhat_dic = {"par": par_names,
+            "r_hat_mean": mean_val, "rhat_std": std_val}
+rhat_df = pd.DataFrame(rhat_dic)
+tabulate(rhat_df, headers="keys", tablefmt="orgtbl", showindex=False)
+#+end_src
+
+#+RESULTS:
+| par         | r_hat_mean | rhat_std |
+|-------------+------------+----------|
+| alpha       |       1.01 |     0.01 |
+| beta        |       1.01 |     0.02 |
+| W           |       1.21 |     0.17 |
+| lambda      |       1.46 |     0.39 |
+| lambda_diag |       1.57 |     0.46 |
+| lambda_high |       1.56 |     0.47 |
+
+* Correcting for species order
+** Sorting species
+
+Species with high factor values are used for constraints.
+
+#+begin_src python :results silent :session :exports both
+f = open(out_dir + "data.pkl", "rb")
+data = cloudpickle.loads(f.read())
+Y = data["Y"]
+Y_sort = np.copy(Y)
+Y_sort[:, 0] = Y[:, 3]
+Y_sort[:, 1] = Y[:, 4]
+Y_sort[:, 2] = Y[:, 5]
+Y_sort[:, 3] = Y[:, 0]
+Y_sort[:, 4] = Y[:, 1]
+Y_sort[:, 5] = Y[:, 2]
+Y = Y_sort
+#+end_src
+
+** Statistical model
+
+#+begin_src python :results silent :session :exports both
+with pm.Model() as model_sort:
+    # Hyperpriors
+    sigma_alpha = pm.HalfNormal("sigma_alpha", sigma=1.0)
+    # Priors
+    # Site random effect
+    alpha = pm.Normal("alpha", mu=0, sigma=sigma_alpha, shape=n_sites, dims="sites")
+    # Latent variables
+    W = pm.Normal("W", mu=0, sigma=1, shape=(n_sites, n_q), dims=("sites", "latent_axis"))
+    # Species effects
+    beta = pm.Normal("beta", mu=0, sigma=1, shape=(n_species, n_p), dims=("species", "fixed_effects"))
+    # Factor loadings with constraints
+    Lambda = makeLambda(n_species, n_q, ("species", "latent_axis"))
+    # Likelihood
+    Xbeta = pm.math.dot(X, beta.transpose())
+    Wlambda = pm.math.dot(W, Lambda.transpose()) 
+    logit_theta = alpha[:, np.newaxis] + Xbeta + Wlambda
+    obs = pm.Bernoulli("obs", logit_p=logit_theta, observed=Y)
+#+end_src
+
+
+#+begin_src python :results silent :session :exports both
+# Inference
+with model_sort:
+    trace_sort = pm.sample(**SAMPLE_KWARGS)
+#+end_src
+
+Save model with cloudpickle.
+
+#+begin_src python :results silent :session :exports both
+with open(out_dir + "model_trace_sort.pkl", "wb") as f:
+     model_trace_dump = cloudpickle.dumps({'model': model_sort, 'trace': trace_sort})
+     f.write(model_trace_dump)
+#+end_src
+
+Load model if necessary (set :eval yes).
+
+#+begin_src python :results silent :session :exports both :eval no
+f = open(out_dir + "model_trace_sort.pkl", "rb")
+model_trace = cloudpickle.loads(f.read())
+model_sort = model_trace["model"]
+trace_sort = model_trace["trace"]
+#+end_src
+
+** Convergence and model performance
+
+#+begin_src python :results silent :session :exports both
+with model_sort:
+    alpha_est = az.summary(trace_sort, var_names=["alpha"], round_to=2)
+    beta_est = az.summary(trace_sort, var_names=["beta"], round_to=2)
+    lambda_diag_est = az.summary(trace_sort,
+                                 var_names=["L_diag"],
+                                 round_to=2)
+    lambda_offdiag_est = az.summary(trace_sort,
+                                    var_names=["L_packed"],
+                                    round_to=2)
+    lambda_est = az.summary(trace_sort,
+                            var_names=["Lambda"],
+                            round_to=2)
+    W_diag_est = az.summary(trace_sort, var_names=["W"],
+                            coords={"sites": np.arange(n_q),
+                                    "latent_axis": np.arange(n_q)},
+                            round_to=2)
+    W_est = az.summary(trace_sort, var_names=["W"],
+                            round_to=2)
+#+end_src
+
+We compute the mean r_hat for each category of parameters.
+
+#+begin_src python :results value raw :session :exports both
+# Compute r_hat mean and std
+rhat_alpha_mean = round(alpha_est["r_hat"].mean(), 2)
+rhat_alpha_std = round(alpha_est["r_hat"].std(), 2)
+rhat_beta_mean = round(beta_est["r_hat"].mean(), 2)
+rhat_beta_std = round(beta_est["r_hat"].std(), 2)
+rhat_W_mean = round(W_est["r_hat"].mean(), 2)
+rhat_W_std = round(W_est["r_hat"].std(), 2)
+rhat_lambda_mean = round(lambda_est["r_hat"].mean(), 2)
+rhat_lambda_std = round(lambda_est["r_hat"].std(), 2)
+rhat_lambda_diag_mean = round(lambda_est.loc[["Lambda[0, 0]", "Lambda[1, 1]", "Lambda[2, 2]"], ["r_hat"]]["r_hat"].mean(), 2)
+rhat_lambda_diag_std = round(lambda_est.loc[["Lambda[0, 0]", "Lambda[1, 1]", "Lambda[2, 2]"], ["r_hat"]]["r_hat"].std(), 2)
+rhat_lambda_high_mean = round(lambda_est.loc[["Lambda[3, 0]", "Lambda[4, 1]", "Lambda[5, 2]"], ["r_hat"]]["r_hat"].mean(), 2)
+rhat_lambda_high_std = round(lambda_est.loc[["Lambda[3, 0]", "Lambda[4, 1]", "Lambda[5, 2]"], ["r_hat"]]["r_hat"].std(), 2)
+
+# Build dataframe
+par_names = ["alpha", "beta", "W", "lambda", "lambda_diag", "lambda_high"]
+mean_val = [eval("rhat_" + x + "_mean") for x in par_names]
+std_val = [eval("rhat_" + x + "_std") for x in par_names]
+
+rhat_dic = {"par": par_names,
+            "r_hat_mean": mean_val, "rhat_std": std_val}
+rhat_df = pd.DataFrame(rhat_dic)
+tabulate(rhat_df, headers="keys", tablefmt="orgtbl", showindex=False)
+#+end_src
+
+#+RESULTS:
+| par         | r_hat_mean | rhat_std |
+|-------------+------------+----------|
+| alpha       |          1 |        0 |
+| beta        |          1 |        0 |
+| W           |          1 |        0 |
+| lambda      |          1 |        0 |
+| lambda_diag |          1 |     0.01 |
+| lambda_high |          1 |     0.01 |
+
+* Automatic sorting of species with PCA on residuals
+** Unsorted data
+
+#+begin_src python :results output :session :exports both
+f = open(out_dir + "data.pkl", "rb")
+data = cloudpickle.loads(f.read())
+Y = data["Y"]
+X = data["X"]
+print("X.shape:")
+print(X.shape)
+print("\nX[:5,]:")
+print(X[:5,])
+print("\nY.shape:")
+print(Y.shape)
+#+end_src
+
+#+RESULTS:
+#+begin_example
+X.shape:
+(100, 3)
+
+X[:5,]:
+[[ 1.         -1.60383681  2.25392546]
+ [ 1.          0.06409991  0.1616142 ]
+ [ 1.          0.7408913   0.83377881]
+ [ 1.          0.15261919 -1.58010947]
+ [ 1.          0.86374389  1.01058529]]
+
+Y.shape:
+(100, 30)
+#+end_example
+
+** Statistical model with residuals
+
+#+begin_src python :results output :session :exports both
+with pm.Model() as model_res:   
+    # Hyperpriors
+    sigma_alpha = pm.HalfNormal("sigma_alpha", sigma=1.0)
+    # Priors
+    # Site random effect
+    alpha = pm.Normal("alpha", mu=0, sigma=sigma_alpha, shape=n_sites)
+    # Species effects
+    beta = pm.Normal("beta", mu=0, sigma=1, shape=(n_species, n_p))
+    # Likelihood
+    Xbeta = pm.math.dot(X, beta.transpose())
+    m = pm.Deterministic("mu", alpha[:, np.newaxis] + Xbeta)
+    logit_theta = pm.Normal("logit_theta", mu=m, sigma=1)
+    e = pm.Deterministic("error", logit_theta - m)
+    obs = pm.Bernoulli("obs", logit_p=logit_theta, observed=Y)
+#+end_src
+
+#+RESULTS:
+
+#+begin_src python :results silent :session :exports code
+# Inference
+with model_res:
+    trace_res = pm.sample(**SAMPLE_KWARGS)
+#+end_src
+
+Save model with cloudpickle.
+
+#+begin_src python :results silent :session :exports both
+with open(out_dir + "model_trace_res.pkl", "wb") as f:
+     model_trace_dump = cloudpickle.dumps({'model': model_res, 'trace': trace_res})
+     f.write(model_trace_dump)
+#+end_src
+
+Get residuals.
+
+#+begin_src python :results output :session :exports both
+with model_res:
+    error_est = az.summary(trace_res, var_names=["error"], round_to=2)
+e = np.asarray(error_est["mean"]).reshape(n_sites, n_species)
+#+end_src
+
+#+RESULTS:
+
+#+begin_src python :results file :session :exports both
+ofile = os.path.join(out_dir, "hist_residuals.png")
+fig = plt.figure()
+plt.hist(e.flatten(), bins=20)
+fig.savefig(ofile)
+ofile
+#+end_src
+
+#+RESULTS:
+[[file:outputs/sim-data-3lv/hist_residuals.png]]
+
+Correlation between residuals and Wlambda.
+
+#+begin_src python :results file :session :exports both
+ofile = out_dir + "corr_res_Wlambda.png"
+fig, ax = plt.subplots(figsize=(6, 6))
+ax.scatter(Wlambda_target, e, c=".3")
+ax.axline((1, 1), slope=1, ls="--", c=".3")
+ax.set_xlabel("Wlambda_target")
+ax.set_ylabel("Estimated residuals")
+ax.set_title("corr_res_Wlambda")
+fig.savefig(ofile)
+ofile
+#+end_src
+
+#+RESULTS:
+[[file:outputs/sim-data-3lv/corr_res_Wlambda.png]]
+
+** PCA on residuals
+
+Make the PCA on residuals to find the coordinates of the species on two axis.
+
+#+begin_src python :results output :session :exports both
+from sklearn.decomposition import PCA
+from sklearn.preprocessing import StandardScaler
+
+pca = PCA(n_components=3)
+e_cr = StandardScaler().fit_transform(e)
+pca_features = pca.fit_transform(e_cr)
+pca_features.shape
+print(pca.explained_variance_ratio_)
+#+end_src
+
+#+RESULTS:
+: [0.27461966 0.11280302 0.05412956]
+
+Here, the first axis explains 27% of the inertia while the second axis explains only about half (11%).
+
+#+begin_src python :results output :session :exports both
+pca_comp = pca.components_.transpose()
+print(pca_comp)
+#+end_src
+
+#+RESULTS:
+#+begin_example
+[[ 1.94429083e-02  4.50829023e-02 -1.53741760e-01]
+ [-2.64964102e-01  6.33756619e-02  7.49584684e-02]
+ [ 2.11243680e-01 -2.91047536e-01 -1.89630527e-05]
+ [-2.35152503e-01  1.07436354e-01  1.33379610e-03]
+ [ 2.23679241e-01  1.98729016e-01 -1.54303551e-01]
+ [ 1.12038922e-01  5.24427278e-02  4.33911530e-01]
+ [ 1.66923544e-01  2.35174499e-01  1.24692071e-01]
+ [ 2.53397685e-01  6.29642082e-02 -1.36564856e-01]
+ [-1.45355801e-02 -2.79373068e-02  1.03988520e-01]
+ [ 2.10240857e-01  1.29147328e-01 -1.70065265e-01]
+ [ 2.29399672e-01  1.66860450e-01  2.21139620e-01]
+ [ 7.23168914e-02 -3.33268922e-01 -1.01689862e-01]
+ [ 4.07709973e-02  1.33442987e-01  3.96189176e-01]
+ [ 2.17065364e-01 -1.25439084e-01 -1.03127525e-01]
+ [ 1.16353458e-01 -2.89185154e-01  3.11168845e-01]
+ [ 4.14468368e-02  9.06986101e-02 -4.42362961e-01]
+ [ 1.50589024e-01 -2.74107627e-01 -7.91453139e-02]
+ [-1.69836149e-01 -2.27877817e-01  2.58124142e-02]
+ [-9.54757576e-02 -2.54200132e-01  3.14677851e-02]
+ [ 2.83297789e-01  2.37504431e-02 -2.55550141e-05]
+ [-6.91087807e-02 -2.45794134e-01  4.78123466e-02]
+ [-2.39621580e-01  7.74325469e-02  4.45646849e-02]
+ [-2.69835497e-01 -7.65776269e-02 -7.19052191e-03]
+ [-1.90826926e-01 -4.69117088e-02  1.16519082e-01]
+ [ 2.01292197e-01 -4.03069537e-02  9.17429990e-02]
+ [-1.35073764e-02  2.56105299e-01 -1.55353580e-01]
+ [-2.38143911e-01  1.46176962e-01  1.76227953e-01]
+ [-8.39425185e-02  3.46513565e-01  3.11272769e-02]
+ [-2.21620246e-01  5.83048043e-02 -2.13420160e-01]
+ [ 2.06503520e-01  1.88797690e-01  1.71518804e-01]]
+#+end_example
+
+Identify the species which influences most each component.
+
+#+begin_src python :results output :session :exports both
+pca_comp_abs = np.abs(pca_comp)
+sp_sel = np.argmax(pca_comp_abs, axis=0)
+print(sp_sel)
+#+end_src
+
+#+RESULTS:
+: [19 27 15]
+
+We correctly identified the two species. We look again at the factor loadings for these two species.
+
+#+begin_src python :results output :session :exports both
+print(lambda_target[sp_sel, :])
+#+end_src
+
+#+RESULTS:
+: [[-2.88754458  0.29394575 -0.42235855]
+:  [ 0.70220339  1.90120307  0.81997005]
+:  [-0.91670261  0.89557285 -0.82867678]]
+
+Sorting species.
+
+#+begin_src python :results output :session :exports both
+Y_sort = np.copy(Y)
+Y_sort[:, 0] = Y[:, sp_sel[0]]
+Y_sort[:, 1] = Y[:, sp_sel[1]]
+Y_sort[:, 2] = Y[:, sp_sel[2]]
+Y_sort[:, sp_sel[0]] = Y[:, 0]
+Y_sort[:, sp_sel[1]] = Y[:, 1]
+Y_sort[:, sp_sel[2]] = Y[:, 2]
+Y = Y_sort
+#+end_src
+
+#+RESULTS:
+
+** Correlation between factor loadings and species coordinates on the two axis of the PCA
+
+#+begin_src python :results output :session :exports both
+cor = np.corrcoef(np.abs(lambda_target.flatten()), np.abs(pca_comp.flatten()))
+print(cor)
+#+end_src
+
+#+RESULTS:
+: [[1.         0.56107177]
+:  [0.56107177 1.        ]]
+
+#+begin_src python :results file :session :exports both
+ofile = os.path.join(out_dir, "cor_lambda_coordPCA_e.png")
+fig, axs = plt.subplots(3, sharex=True)
+axs[0].scatter(np.abs(lambda_target[:, 0]), np.abs(pca_comp[:, 0]), c="b")
+axs[1].scatter(np.abs(lambda_target[:, 1]), np.abs(pca_comp[:, 1]), c="g")
+axs[2].scatter(np.abs(lambda_target[:, 2]), np.abs(pca_comp[:, 2]), c="r")
+for ax in axs.flat:
+    ax.set(xlabel="lambda targets (abs)", ylabel="Coord. on\nPCA axis (abs)")
+fig.savefig(ofile)
+ofile
+#+end_src
+
+#+RESULTS:
+[[file:outputs/sim-data-3lv/cor_lambda_coordPCA_e.png]]
+ 
+** Statistical model with sorted species
+
+#+begin_src python :results silent :session :exports both
+with pm.Model() as model_auto:
+    # Hyperpriors
+    sigma_alpha = pm.HalfNormal("sigma_alpha", sigma=1.0)
+    # Priors
+    # Site random effect
+    alpha = pm.Normal("alpha", mu=0, sigma=sigma_alpha, shape=n_sites, dims="sites")
+    # Latent variables
+    W = pm.Normal("W", mu=0, sigma=1, shape=(n_sites, n_q), dims=("sites", "latent_axis"))
+    # Species effects
+    beta = pm.Normal("beta", mu=0, sigma=1, shape=(n_species, n_p), dims=("species", "fixed_effects"))
+    # Factor loadings with constraints
+    Lambda = makeLambda(n_species, n_q, ("species", "latent_axis"))
+    # Likelihood
+    Xbeta = pm.math.dot(X, beta.transpose())
+    Wlambda = pm.math.dot(W, Lambda.transpose()) 
+    logit_theta = alpha[:, np.newaxis] + Xbeta + Wlambda
+    obs = pm.Bernoulli("obs", logit_p=logit_theta, observed=Y)
+#+end_src
+
+#+begin_src python :results silent :session :exports code
+# Inference
+with model_auto:
+    trace_auto = pm.sample(**SAMPLE_KWARGS)
+#+end_src
+
+Save model with cloudpickle.
+
+#+begin_src python :results silent :session :exports both
+with open(out_dir + "model_trace_auto.pkl", "wb") as f:
+     model_trace_dump = cloudpickle.dumps({'model': model_auto, 'trace': trace_auto})
+     f.write(model_trace_dump)
+#+end_src
+
+** Convergence and model performance
+
+#+begin_src python :results silent :session :exports both
+with model_auto:
+    alpha_est = az.summary(trace_auto, var_names=["alpha"], round_to=2)
+    beta_est = az.summary(trace_auto, var_names=["beta"], round_to=2)
+    lambda_diag_est = az.summary(trace_auto,
+                                 var_names=["L_diag"],
+                                 round_to=2)
+    lambda_offdiag_est = az.summary(trace_auto,
+                                    var_names=["L_packed"],
+                                    round_to=2)
+    lambda_est = az.summary(trace_auto,
+                            var_names=["Lambda"],
+                            round_to=2)
+    W_diag_est = az.summary(trace_auto, var_names=["W"],
+                            coords={"sites": np.arange(n_q),
+                                    "latent_axis": np.arange(n_q)},
+                            round_to=2)
+    W_est = az.summary(trace_auto, var_names=["W"],
+                            round_to=2)
+#+end_src
+
+We compute the mean r_hat for each category of parameters.
+
+#+begin_src python :results value raw :session :exports both
+# Compute r_hat mean and std
+rhat_alpha_mean = round(alpha_est["r_hat"].mean(), 2)
+rhat_alpha_std = round(alpha_est["r_hat"].std(), 2)
+rhat_beta_mean = round(beta_est["r_hat"].mean(), 2)
+rhat_beta_std = round(beta_est["r_hat"].std(), 2)
+rhat_W_mean = round(W_est["r_hat"].mean(), 2)
+rhat_W_std = round(W_est["r_hat"].std(), 2)
+rhat_lambda_mean = round(lambda_est["r_hat"].mean(), 2)
+rhat_lambda_std = round(lambda_est["r_hat"].std(), 2)
+rhat_lambda_diag_mean = round(lambda_est.loc[["Lambda[0, 0]", "Lambda[1, 1]", "Lambda[2, 2]"], ["r_hat"]]["r_hat"].mean(), 2)
+rhat_lambda_diag_std = round(lambda_est.loc[["Lambda[0, 0]", "Lambda[1, 1]", "Lambda[2, 2]"], ["r_hat"]]["r_hat"].std(), 2)
+rhat_lambda_high_mean = round(lambda_est.loc[["Lambda[3, 0]", "Lambda[4, 1]", "Lambda[5, 2]"], ["r_hat"]]["r_hat"].mean(), 2)
+rhat_lambda_high_std = round(lambda_est.loc[["Lambda[3, 0]", "Lambda[4, 1]", "Lambda[5, 2]"], ["r_hat"]]["r_hat"].std(), 2)
+
+# Build dataframe
+par_names = ["alpha", "beta", "W", "lambda", "lambda_diag", "lambda_high"]
+mean_val = [eval("rhat_" + x + "_mean") for x in par_names]
+std_val = [eval("rhat_" + x + "_std") for x in par_names]
+
+rhat_dic = {"par": par_names,
+            "r_hat_mean": mean_val, "rhat_std": std_val}
+rhat_df = pd.DataFrame(rhat_dic)
+tabulate(rhat_df, headers="keys", tablefmt="orgtbl", showindex=False)
+#+end_src
+
+#+RESULTS:
+| par         | r_hat_mean | rhat_std |
+|-------------+------------+----------|
+| alpha       |          1 |        0 |
+| beta        |          1 |        0 |
+| W           |          1 |        0 |
+| lambda      |          1 |        0 |
+| lambda_diag |       1.01 |     0.01 |
+| lambda_high |          1 |        0 |
+
+#+begin_src python :results value raw :session :exports both
+lambda_high = lambda_est.loc[["Lambda[3, 0]", "Lambda[4, 1]", "Lambda[5, 2]"], ["mean", "sd", "r_hat"]]
+lambda_high["target_value"] = [lambda_target[3, 0], lambda_target[4, 1], lambda_target[5, 2]]
+tabulate(lambda_high, headers="keys", tablefmt="orgtbl", showindex=True)
+#+end_src
+
+#+RESULTS:
+|              |  mean |   sd | r_hat | target_value |
+|--------------+-------+------+-------+--------------|
+| Lambda[3, 0] | -2.68 | 0.62 |     1 |            3 |
+| Lambda[4, 1] |  1.58 | 0.57 |     1 |            2 |
+| Lambda[5, 2] |  -0.4 | 0.46 |     1 |            1 |
+
+
+* Environment setup and test :noexport:
+
+#+BEGIN_SRC python :results value
+import sys
+return sys.executable
+#+END_SRC
+
+#+RESULTS:
+: /home/ghislain/.pyenv/versions/miniconda3-latest/envs/JSDM-PyMC/bin/python
+
+# EOF

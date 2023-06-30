@@ -1,0 +1,1761 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<!-- 2023-01-26 jeu. 12:55 -->
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Simulated data with bad constraints</title>
+<meta name="author" content="Ghislain Vieilledent" />
+<meta name="generator" content="Org Mode" />
+<link rel="stylesheet" type="text/css" href="style/worg.css"/>
+<script type="text/x-mathjax-config">
+    MathJax.Hub.Config({
+        displayAlign: "center",
+        displayIndent: "0em",
+
+        "HTML-CSS": { scale: 100,
+                        linebreaks: { automatic: "false" },
+                        webFont: "TeX"
+                       },
+        SVG: {scale: 100,
+              linebreaks: { automatic: "false" },
+              font: "TeX"},
+        NativeMML: {scale: 100},
+        TeX: { equationNumbers: {autoNumber: "AMS"},
+               MultLineWidth: "85%",
+               TagSide: "right",
+               TagIndent: ".8em"
+             }
+});
+</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.0/MathJax.js?config=TeX-AMS_HTML"></script>
+</head>
+<body>
+<div id="content" class="content">
+<header>
+<h1 class="title">Simulated data with bad constraints</h1>
+</header><nav id="table-of-contents" role="doc-toc">
+<h2>Table of Contents</h2>
+<div id="text-table-of-contents" role="doc-toc">
+<ul>
+<li><a href="#org4cb610c">1. Installing PyMC in a Python virtual environment</a></li>
+<li><a href="#orga6388bb">2. Import libraries</a></li>
+<li><a href="#orgff3a881">3. Functions</a></li>
+<li><a href="#orgbaae501">4. Simulating data</a></li>
+<li><a href="#orgc817d2a">5. Model</a></li>
+<li><a href="#org1aa961f">6. Convergence and model performance</a>
+<ul>
+<li><a href="#orgdc7999c">6.1. Plotting traces</a></li>
+<li><a href="#org0f03cf4">6.2. Parameter estimates.</a></li>
+<li><a href="#org759ee52">6.3. Traces for constrained parameters</a>
+<ul>
+<li><a href="#org67f5808">6.3.1. Factor loadings on the diagonal</a></li>
+<li><a href="#org33a51af">6.3.2. Species with high factor loadings</a></li>
+</ul>
+</li>
+<li><a href="#orgafd239e">6.4. Convergence criteria</a></li>
+<li><a href="#org9820d6d">6.5. Predicted vs. target parameter values</a></li>
+</ul>
+</li>
+<li><a href="#orgf6b3f5b">7. Correcting for species order</a>
+<ul>
+<li><a href="#org1438f01">7.1. Sorting species</a></li>
+<li><a href="#org75ed33c">7.2. Statistical model</a></li>
+<li><a href="#org838205c">7.3. Convergence and model performance</a></li>
+<li><a href="#orgb975ce8">7.4. Predicted vs. target parameter values</a></li>
+</ul>
+</li>
+<li><a href="#org841980f">8. Automatic sorting of species with PCA on residuals</a>
+<ul>
+<li><a href="#org5221758">8.1. Unsorted data</a></li>
+<li><a href="#org7c0b297">8.2. Statistical model with residuals</a></li>
+<li><a href="#orgbf08547">8.3. PCA on residuals</a></li>
+<li><a href="#org92987bb">8.4. Statistical model with sorted species</a></li>
+<li><a href="#orge106b70">8.5. Convergence and model performance</a></li>
+<li><a href="#org638aa3b">8.6. Predicted vs. target parameter values</a></li>
+</ul>
+</li>
+</ul>
+</div>
+</nav>
+
+<div id="outline-container-org4cb610c" class="outline-2">
+<h2 id="org4cb610c"><span class="section-number-2">1.</span> Installing PyMC in a Python virtual environment</h2>
+<div class="outline-text-2" id="text-1">
+<p>
+The best way to install the package is to create a Python virtual environment, for example using <code>conda</code>. You first need to have <a href="https://docs.conda.io/en/latest/miniconda.html">miniconda3</a> installed. Then, create a <a href="https://docs.conda.io/projects/conda/en/latest/user-guide/tasks/manage-environments.html">conda environment</a> and install the PyMC package with the following commands:
+</p>
+
+<div class="org-src-container">
+<pre class="src src-shell">conda create --name JSDM-PyMC -c conda-forge <span class="org-variable-name">python</span>=3.9
+conda activate JSDM-PyMC
+conda install -c conda-forge mamba
+mamba install -c conda-forge <span class="org-string">"pymc&gt;=4"</span>
+</pre>
+</div>
+
+<p>
+To deactivate and delete the conda environment, use the following commands:
+</p>
+
+<div class="org-src-container">
+<pre class="src src-shell">conda deactivate
+conda env remove --name JSDM-PyMC
+</pre>
+</div>
+</div>
+</div>
+
+<div id="outline-container-orga6388bb" class="outline-2">
+<h2 id="orga6388bb"><span class="section-number-2">2.</span> Import libraries</h2>
+<div class="outline-text-2" id="text-2">
+<div class="org-src-container">
+<pre class="src src-python"><span class="org-keyword">import</span> os
+<span class="org-keyword">import</span> sys
+
+<span class="org-keyword">import</span> arviz <span class="org-keyword">as</span> az
+<span class="org-keyword">import</span> matplotlib.pyplot <span class="org-keyword">as</span> plt
+<span class="org-keyword">import</span> numpy <span class="org-keyword">as</span> np
+<span class="org-keyword">import</span> pandas <span class="org-keyword">as</span> pd
+<span class="org-keyword">import</span> cloudpickle
+<span class="org-keyword">import</span> pymc <span class="org-keyword">as</span> pm
+<span class="org-keyword">import</span> pytensor.tensor <span class="org-keyword">as</span> pt
+<span class="org-keyword">from</span> tabulate <span class="org-keyword">import</span> tabulate
+
+<span class="org-builtin">print</span>(f<span class="org-string">"Running on PyMC v</span>{pm.__version__}<span class="org-string">"</span>)
+</pre>
+</div>
+
+<pre class="example">
+Running on PyMC v5.0.2
+</pre>
+</div>
+</div>
+
+
+<div id="outline-container-orgff3a881" class="outline-2">
+<h2 id="orgff3a881"><span class="section-number-2">3.</span> Functions</h2>
+<div class="outline-text-2" id="text-3">
+<div class="org-src-container">
+<pre class="src src-python"><span class="org-keyword">def</span> <span class="org-function-name">inv_logit</span>(p):
+<span class="org-highlight-indentation"> </span>   <span class="org-keyword">return</span> 1. / (1. + np.exp(-p))
+</pre>
+</div>
+</div>
+</div>
+
+<div id="outline-container-orgbaae501" class="outline-2">
+<h2 id="orgbaae501"><span class="section-number-2">4.</span> Simulating data</h2>
+<div class="outline-text-2" id="text-4">
+<div class="org-src-container">
+<pre class="src src-python"><span class="org-comment-delimiter"># </span><span class="org-comment">Set seed for repeatability</span>
+<span class="org-variable-name">SEED</span> = 1234
+<span class="org-variable-name">rng</span> = np.random.default_rng(SEED)
+
+<span class="org-comment-delimiter"># </span><span class="org-comment">Number of sites and species</span>
+<span class="org-variable-name">n_sites</span> = 100
+<span class="org-variable-name">n_species</span> = 30
+<span class="org-comment-delimiter"># </span><span class="org-comment">Number of latent variables</span>
+<span class="org-variable-name">n_q</span> = 2
+
+<span class="org-comment-delimiter"># </span><span class="org-comment">Ecological variables</span>
+<span class="org-variable-name">Int</span> = np.array([1] * n_sites)
+<span class="org-variable-name">x1</span> = rng.standard_normal(size=n_sites)
+x2 = rng.standard_normal(size=n_sites)
+X = np.array([Int, x1, x2]).transpose()
+<span class="org-builtin">print</span>(<span class="org-string">"X.shape:"</span>)
+<span class="org-builtin">print</span>(X.shape)
+<span class="org-builtin">print</span>(<span class="org-string">"\nX[:5,]:"</span>)
+<span class="org-builtin">print</span>(X[:5,])
+<span class="org-comment-delimiter"># </span><span class="org-comment">Number of explicative variables</span>
+n_p = X.shape[1]
+
+<span class="org-comment-delimiter"># </span><span class="org-comment">Latent variables</span>
+w1 = rng.standard_normal(size=n_sites)
+w2 = rng.standard_normal(size=n_sites)
+W_target = np.array([w1, w2]).transpose()
+<span class="org-builtin">print</span>(<span class="org-string">"\nW.target.shape:"</span>)
+<span class="org-builtin">print</span>(W_target.shape)
+<span class="org-builtin">print</span>(<span class="org-string">"\nW_target[:5,]:"</span>)
+<span class="org-builtin">print</span>(W_target[:5,])
+<span class="org-comment-delimiter"># </span><span class="org-comment">(Check that W_target are independant)</span>
+R_W = np.corrcoef(W_target, rowvar=<span class="org-constant">False</span>)
+<span class="org-builtin">print</span>(<span class="org-string">"\nR_W:"</span>)
+<span class="org-builtin">print</span>(R_W)
+
+<span class="org-comment-delimiter"># </span><span class="org-comment">Fixed species effects beta</span>
+beta_target = rng.uniform(-1, 1, n_p*n_species).reshape(n_species, n_p)
+
+<span class="org-comment-delimiter"># </span><span class="org-comment">Factor loading lambda</span>
+lambda_target = rng.uniform(-1, 1, n_q*n_species).reshape(n_species, n_q)
+<span class="org-comment-delimiter"># </span><span class="org-comment">Constraints on lambda</span>
+lambda_target[0, 1] = 0
+lambda_target[np.arange(n_q), np.arange(n_q)] =  np.array([-0.1] * n_q)
+lambda_target[2, 0] = 2
+lambda_target[2, 1] = 0
+lambda_target[3, 0] = rng.uniform(-0.1, 0.1)
+lambda_target[3, 1] = 2
+<span class="org-builtin">print</span>(<span class="org-string">"\nlambda_target.shape:"</span>)
+<span class="org-builtin">print</span>(lambda_target.shape)
+<span class="org-builtin">print</span>(<span class="org-string">"\nlambda_target[:5,]:"</span>)
+<span class="org-builtin">print</span>(lambda_target[:5,])
+
+<span class="org-comment-delimiter"># </span><span class="org-comment">Variance of random site effects </span>
+sigma_alpha_target = 0.5
+<span class="org-comment-delimiter"># </span><span class="org-comment">Random site effects</span>
+alpha_target = rng.normal(loc=0, scale=sigma_alpha_target, size=n_sites)
+
+<span class="org-comment-delimiter"># </span><span class="org-comment">Probabilities</span>
+Xbeta_target = np.matmul(X, beta_target.transpose())
+Wlambda_target = np.matmul(W_target, lambda_target.transpose()) 
+logit_theta_target = alpha_target[:, np.newaxis] + Xbeta_target + Wlambda_target
+theta_target = inv_logit(logit_theta_target)
+
+<span class="org-comment-delimiter"># </span><span class="org-comment">Simulated occurrences</span>
+Y = rng.binomial(n=1, p=theta_target)
+<span class="org-builtin">print</span>(<span class="org-string">"\nY.shape:"</span>)
+<span class="org-builtin">print</span>(Y.shape)
+</pre>
+</div>
+
+<pre class="example" id="orgf52ed38">
+X.shape:
+(100, 3)
+
+X[:5,]:
+[[ 1.         -1.60383681  2.25392546]
+ [ 1.          0.06409991  0.1616142 ]
+ [ 1.          0.7408913   0.83377881]
+ [ 1.          0.15261919 -1.58010947]
+ [ 1.          0.86374389  1.01058529]]
+
+W.target.shape:
+(100, 2)
+
+W_target[:5,]:
+[[ 0.73118867 -1.18459707]
+ [-0.22964706 -0.35451603]
+ [ 2.14411198  1.36731227]
+ [ 0.39714586  1.70012206]
+ [ 0.15946658 -1.8795888 ]]
+
+R_W:
+[[1.         0.02136166]
+ [0.02136166 1.        ]]
+
+lambda_target.shape:
+(30, 2)
+
+lambda_target[:5,]:
+[[-0.1         0.        ]
+ [ 0.07491686 -0.1       ]
+ [ 2.          0.        ]
+ [ 0.07563471  2.        ]
+ [ 0.19104104 -0.88684922]]
+
+Y.shape:
+(100, 30)
+</pre>
+</div>
+</div>
+
+
+<div id="outline-container-orgc817d2a" class="outline-2">
+<h2 id="orgc817d2a"><span class="section-number-2">5.</span> Model</h2>
+<div class="outline-text-2" id="text-5">
+<div class="org-src-container">
+<pre class="src src-python"><span class="org-variable-name">Lambda0</span> = pt.eye(n_species, n_q)
+<span class="org-variable-name">HALFNORMAL_SCALE</span> = 1. / np.sqrt(1. - 2. / np.pi)
+</pre>
+</div>
+
+<div class="org-src-container">
+<pre class="src src-python"><span class="org-keyword">with</span> pm.Model() <span class="org-keyword">as</span> <span class="org-variable-name">model</span>:
+<span class="org-highlight-indentation"> </span>   <span class="org-comment-delimiter"># </span><span class="org-comment">Hyperpriors</span>
+<span class="org-highlight-indentation"> </span>   sigma_alpha = pm.HalfNormal(<span class="org-string">"sigma_alpha"</span>, sigma=1.0)
+<span class="org-highlight-indentation"> </span>   <span class="org-comment-delimiter"># </span><span class="org-comment">Priors</span>
+<span class="org-highlight-indentation"> </span>   <span class="org-comment-delimiter"># </span><span class="org-comment">Site random effect</span>
+<span class="org-highlight-indentation"> </span>   alpha = pm.Normal(<span class="org-string">"alpha"</span>, mu=0, sigma=sigma_alpha, shape=n_sites)
+<span class="org-highlight-indentation"> </span>   <span class="org-comment-delimiter"># </span><span class="org-comment">Latent variables</span>
+<span class="org-highlight-indentation"> </span>   W = pm.Normal(<span class="org-string">"W"</span>, mu=0, sigma=1, shape=(n_sites, n_q))
+<span class="org-highlight-indentation"> </span>   <span class="org-comment-delimiter"># </span><span class="org-comment">Species effects</span>
+<span class="org-highlight-indentation"> </span>   beta = pm.Normal(<span class="org-string">"beta"</span>, mu=0, sigma=1, shape=(n_species, n_p))
+<span class="org-highlight-indentation"> </span>   <span class="org-comment-delimiter"># </span><span class="org-comment">Factor loadings with constraints</span>
+<span class="org-highlight-indentation"> </span>   <span class="org-comment-delimiter"># </span><span class="org-comment">Diagonal</span>
+<span class="org-highlight-indentation"> </span>   Lambda1 = pt.set_subtensor(
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   Lambda0[np.arange(n_q), np.arange(n_q)],
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   pm.HalfNormal(<span class="org-string">"Lambda_diag"</span>, sigma=HALFNORMAL_SCALE, shape=n_q))
+<span class="org-highlight-indentation"> </span>   <span class="org-comment-delimiter"># </span><span class="org-comment">Inferior</span>
+<span class="org-highlight-indentation"> </span>   Lambda2 = pt.set_subtensor(
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   Lambda1[1, 0],
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   pm.Normal(<span class="org-string">"Lambda_inf"</span>, mu=0, sigma=1))
+<span class="org-highlight-indentation"> </span>   <span class="org-comment-delimiter"># </span><span class="org-comment">Block</span>
+<span class="org-highlight-indentation"> </span>   Lambda = pm.Deterministic(
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-string">"Lambda"</span>,
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   pt.set_subtensor(
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   Lambda2[n_q:],
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   pm.Normal(<span class="org-string">"Lambda_block"</span>, mu=0, sigma=1, shape=(n_species-n_q, n_q))))
+<span class="org-highlight-indentation"> </span>   <span class="org-comment-delimiter"># </span><span class="org-comment">Likelihood</span>
+<span class="org-highlight-indentation"> </span>   Xbeta = pm.math.dot(X, beta.transpose())
+<span class="org-highlight-indentation"> </span>   Wlambda = pm.math.dot(W, Lambda.transpose()) 
+<span class="org-highlight-indentation"> </span>   logit_theta = alpha[:, np.newaxis] + Xbeta + Wlambda
+<span class="org-highlight-indentation"> </span>   obs = pm.Bernoulli(<span class="org-string">"obs"</span>, logit_p=logit_theta, observed=Y)
+</pre>
+</div>
+
+<p>
+Parameters for MCMC sampling:
+</p>
+
+<div class="org-src-container">
+<pre class="src src-python"><span class="org-variable-name">CORES</span> = 2
+<span class="org-variable-name">SAMPLE_KWARGS</span> = {
+<span class="org-highlight-indentation"> </span>   <span class="org-string">'draws'</span>: 1000,
+<span class="org-highlight-indentation"> </span>   <span class="org-string">'cores'</span>: CORES,
+<span class="org-highlight-indentation"> </span>   <span class="org-string">'init'</span>: <span class="org-string">'auto'</span>,
+<span class="org-highlight-indentation"> </span>   <span class="org-string">'tune'</span>: 1000,
+<span class="org-highlight-indentation"> </span>   <span class="org-string">'random_seed'</span>: [SEED + i <span class="org-keyword">for</span> i <span class="org-keyword">in</span> <span class="org-builtin">range</span>(CORES)]
+}
+</pre>
+</div>
+
+<div class="org-src-container">
+<pre class="src src-python"><span class="org-comment-delimiter"># </span><span class="org-comment">Inference</span>
+<span class="org-keyword">with</span> <span class="org-variable-name">model</span>:
+<span class="org-highlight-indentation"> </span>   trace = pm.sample(**SAMPLE_KWARGS)
+</pre>
+</div>
+
+<p>
+Save model with cloudpickle (cf. <a href="https://github.com/pymc-devs/pymc/issues/5886">link</a>).
+</p>
+
+<div class="org-src-container">
+<pre class="src src-python"><span class="org-variable-name">out_dir</span> = <span class="org-string">"outputs/simulated-data-bad-constraints/"</span>
+<span class="org-keyword">with</span> <span class="org-builtin">open</span>(out_dir + <span class="org-string">"model_trace.pkl"</span>, <span class="org-string">"wb"</span>) <span class="org-keyword">as</span> <span class="org-variable-name">f</span>:
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>model_trace_dump = cloudpickle.dumps({<span class="org-string">'model'</span>: model, <span class="org-string">'trace'</span>: trace})
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>f.write(model_trace_dump)
+</pre>
+</div>
+
+<p>
+Then, model results can be loaded with the following code:
+</p>
+
+<div class="org-src-container">
+<pre class="src src-python"><span class="org-variable-name">f</span> = <span class="org-builtin">open</span>(out_dir + <span class="org-string">"model_trace.pkl"</span>, <span class="org-string">"rb"</span>)
+<span class="org-variable-name">model_trace</span> = cloudpickle.loads(f.read())
+</pre>
+</div>
+</div>
+</div>
+
+<div id="outline-container-org1aa961f" class="outline-2">
+<h2 id="org1aa961f"><span class="section-number-2">6.</span> Convergence and model performance</h2>
+<div class="outline-text-2" id="text-6">
+</div>
+<div id="outline-container-orgdc7999c" class="outline-3">
+<h3 id="orgdc7999c"><span class="section-number-3">6.1.</span> Plotting traces</h3>
+<div class="outline-text-3" id="text-6-1">
+<div class="org-src-container">
+<pre class="src src-python"><span class="org-variable-name">ofile</span> = out_dir + <span class="org-string">"trace.png"</span>
+<span class="org-keyword">with</span> <span class="org-variable-name">model</span>:
+<span class="org-highlight-indentation"> </span>   axes = az.plot_trace(trace,
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>var_names=[<span class="org-string">"alpha"</span>, <span class="org-string">"beta"</span>,
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-string">"sigma_alpha"</span>])
+fig = axes.ravel()[0].figure
+fig.savefig(ofile)
+ofile
+</pre>
+</div>
+
+
+<figure id="org19e064a">
+<img src="outputs/simulated-data-bad-constraints/trace.png" alt="trace.png" width="900">
+
+</figure>
+</div>
+</div>
+
+<div id="outline-container-org0f03cf4" class="outline-3">
+<h3 id="org0f03cf4"><span class="section-number-3">6.2.</span> Parameter estimates.</h3>
+<div class="outline-text-3" id="text-6-2">
+<div class="org-src-container">
+<pre class="src src-python"><span class="org-keyword">with</span> <span class="org-variable-name">model</span>:
+<span class="org-highlight-indentation"> </span>   summary = az.summary(trace,
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>var_names=[<span class="org-string">"alpha"</span>, <span class="org-string">"beta"</span>,
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-string">"sigma_alpha"</span>], round_to=2)
+summary.to_csv(out_dir + <span class="org-string">"model_summary.txt"</span>)
+</pre>
+</div>
+
+<div class="org-src-container">
+<pre class="src src-python"><span class="org-keyword">with</span> <span class="org-variable-name">model</span>:
+<span class="org-highlight-indentation"> </span>   alpha_est = az.summary(trace, var_names=[<span class="org-string">"alpha"</span>], round_to=2)
+<span class="org-highlight-indentation"> </span>   beta_est = az.summary(trace, var_names=[<span class="org-string">"beta"</span>], round_to=2)
+<span class="org-highlight-indentation"> </span>   lambda_est = az.summary(trace, var_names=[<span class="org-string">"Lambda"</span>], round_to=2)
+<span class="org-highlight-indentation"> </span>   lambda_0_est = az.summary(trace,
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span> var_names=[<span class="org-string">"Lambda"</span>],
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span> coords={<span class="org-string">"Lambda_dim_1"</span>: [0]},
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span> round_to=2)
+<span class="org-highlight-indentation"> </span>   lambda_1_est = az.summary(trace,
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span> var_names=[<span class="org-string">"Lambda"</span>],
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span> coords={<span class="org-string">"Lambda_dim_1"</span>: [1]},
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span> round_to=2)
+<span class="org-highlight-indentation"> </span>   W_est = az.summary(trace, var_names=[<span class="org-string">"W"</span>], round_to=2)
+<span class="org-highlight-indentation"> </span>   W_0_est = az.summary(trace, var_names=[<span class="org-string">"W"</span>],
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>coords={<span class="org-string">"W_dim_1"</span>: [0]},
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>round_to=2)
+<span class="org-highlight-indentation"> </span>   W_1_est = az.summary(trace, var_names=[<span class="org-string">"W"</span>],
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>coords={<span class="org-string">"W_dim_1"</span>: [1]},
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>round_to=2)
+</pre>
+</div>
+</div>
+</div>
+
+<div id="outline-container-org759ee52" class="outline-3">
+<h3 id="org759ee52"><span class="section-number-3">6.3.</span> Traces for constrained parameters</h3>
+<div class="outline-text-3" id="text-6-3">
+</div>
+<div id="outline-container-org67f5808" class="outline-4">
+<h4 id="org67f5808"><span class="section-number-4">6.3.1.</span> Factor loadings on the diagonal</h4>
+<div class="outline-text-4" id="text-6-3-1">
+<div class="org-src-container">
+<pre class="src src-python"><span class="org-variable-name">ofile</span> = out_dir + <span class="org-string">"trace_lambda_00.png"</span>
+<span class="org-keyword">with</span> <span class="org-variable-name">model</span>:
+<span class="org-highlight-indentation"> </span>   axes = az.plot_trace(trace,
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>var_names=[<span class="org-string">"Lambda"</span>],
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>coords={<span class="org-string">"Lambda_dim_0"</span>: [0],
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span><span class="org-string">"Lambda_dim_1"</span>: [0]})
+fig = axes.ravel()[0].figure
+fig.savefig(ofile)
+ofile
+</pre>
+</div>
+
+
+<figure id="orgd3f3bd6">
+<img src="outputs/simulated-data-bad-constraints/trace_lambda_00.png" alt="trace_lambda_00.png" width="900">
+
+</figure>
+
+<div class="org-src-container">
+<pre class="src src-python"><span class="org-variable-name">ofile</span> = out_dir + <span class="org-string">"trace_lambda_11.png"</span>
+<span class="org-keyword">with</span> <span class="org-variable-name">model</span>:
+<span class="org-highlight-indentation"> </span>   axes = az.plot_trace(trace,
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>var_names=[<span class="org-string">"Lambda"</span>],
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>coords={<span class="org-string">"Lambda_dim_0"</span>: [1],
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span><span class="org-string">"Lambda_dim_1"</span>: [1]})
+fig = axes.ravel()[0].figure
+fig.savefig(ofile)
+ofile
+</pre>
+</div>
+
+
+<figure id="orgf94a35e">
+<img src="outputs/simulated-data-bad-constraints/trace_lambda_11.png" alt="trace_lambda_11.png" width="900">
+
+</figure>
+
+<p>
+For these two lambdas, the MCMCs do not converge and samples are concentrated around the zero values, the closest positive value to the target values of -0.1.
+</p>
+
+<div class="org-src-container">
+<pre class="src src-python"><span class="org-variable-name">lambda_diag</span> = lambda_est.loc[[<span class="org-string">"Lambda[0, 0]"</span>, <span class="org-string">"Lambda[1, 1]"</span>], [<span class="org-string">"mean"</span>, <span class="org-string">"sd"</span>, <span class="org-string">"r_hat"</span>]]
+<span class="org-variable-name">lambda_diag</span>[<span class="org-string">"target_value"</span>] = [lambda_target[0, 0], lambda_target[1, 1]]
+tabulate(lambda_diag, headers=<span class="org-string">"keys"</span>, tablefmt=<span class="org-string">"orgtbl"</span>, showindex=<span class="org-constant">True</span>)
+</pre>
+</div>
+
+<table>
+
+
+<colgroup>
+<col  class="org-left">
+
+<col  class="org-right">
+
+<col  class="org-right">
+
+<col  class="org-right">
+
+<col  class="org-right">
+</colgroup>
+<thead>
+<tr>
+<th scope="col" class="org-left">&#xa0;</th>
+<th scope="col" class="org-right">mean</th>
+<th scope="col" class="org-right">sd</th>
+<th scope="col" class="org-right">r_hat</th>
+<th scope="col" class="org-right">target_value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="org-left">Lambda[0, 0]</td>
+<td class="org-right">0.31</td>
+<td class="org-right">0.24</td>
+<td class="org-right">1.01</td>
+<td class="org-right">-0.1</td>
+</tr>
+
+<tr>
+<td class="org-left">Lambda[1, 1]</td>
+<td class="org-right">0.39</td>
+<td class="org-right">0.31</td>
+<td class="org-right">1.05</td>
+<td class="org-right">-0.1</td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+
+
+<div id="outline-container-org33a51af" class="outline-4">
+<h4 id="org33a51af"><span class="section-number-4">6.3.2.</span> Species with high factor loadings</h4>
+<div class="outline-text-4" id="text-6-3-2">
+<div class="org-src-container">
+<pre class="src src-python"><span class="org-variable-name">ofile</span> = out_dir + <span class="org-string">"trace_lambda_20.png"</span>
+<span class="org-keyword">with</span> <span class="org-variable-name">model</span>:
+<span class="org-highlight-indentation"> </span>   axes = az.plot_trace(trace,
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>var_names=[<span class="org-string">"Lambda"</span>],
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>coords={<span class="org-string">"Lambda_dim_0"</span>: [2],
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span><span class="org-string">"Lambda_dim_1"</span>: [0]})
+fig = axes.ravel()[0].figure
+fig.savefig(ofile)
+ofile
+</pre>
+</div>
+
+
+<figure id="org13c865a">
+<img src="outputs/simulated-data-bad-constraints/trace_lambda_20.png" alt="trace_lambda_20.png" width="900">
+
+</figure>
+
+<div class="org-src-container">
+<pre class="src src-python"><span class="org-variable-name">ofile</span> = out_dir + <span class="org-string">"trace_lambda_31.png"</span>
+<span class="org-keyword">with</span> <span class="org-variable-name">model</span>:
+<span class="org-highlight-indentation"> </span>   axes = az.plot_trace(trace,
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>var_names=[<span class="org-string">"Lambda"</span>],
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>coords={<span class="org-string">"Lambda_dim_0"</span>: [3],
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span><span class="org-string">"Lambda_dim_1"</span>: [1]})
+fig = axes.ravel()[0].figure
+fig.savefig(ofile)
+ofile
+</pre>
+</div>
+
+
+<figure id="orgc359339">
+<img src="outputs/simulated-data-bad-constraints/trace_lambda_31.png" alt="trace_lambda_31.png" width="900">
+
+</figure>
+
+<p>
+For species with high factor loadings, the MCMCs do not converge (r_hat &gt;&gt; 1) and oscillate between positive and negative values (bimodal distributions) because the sign of the factor loadings are not correctly set by the constraints on the diagonal. The mean parameter estimates end up being close to zero while the target parameter values are far from zero (values 2 and -2).
+</p>
+
+<div class="org-src-container">
+<pre class="src src-python"><span class="org-variable-name">lambda_high</span> = lambda_est.loc[[<span class="org-string">"Lambda[2, 0]"</span>, <span class="org-string">"Lambda[3, 1]"</span>], [<span class="org-string">"mean"</span>, <span class="org-string">"sd"</span>, <span class="org-string">"r_hat"</span>]]
+<span class="org-variable-name">lambda_high</span>[<span class="org-string">"target_value"</span>] = [lambda_target[2, 0], lambda_target[3, 1]]
+tabulate(lambda_high, headers=<span class="org-string">"keys"</span>, tablefmt=<span class="org-string">"orgtbl"</span>, showindex=<span class="org-constant">True</span>)
+</pre>
+</div>
+
+<table>
+
+
+<colgroup>
+<col  class="org-left">
+
+<col  class="org-right">
+
+<col  class="org-right">
+
+<col  class="org-right">
+
+<col  class="org-right">
+</colgroup>
+<thead>
+<tr>
+<th scope="col" class="org-left">&#xa0;</th>
+<th scope="col" class="org-right">mean</th>
+<th scope="col" class="org-right">sd</th>
+<th scope="col" class="org-right">r_hat</th>
+<th scope="col" class="org-right">target_value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="org-left">Lambda[2, 0]</td>
+<td class="org-right">-0.07</td>
+<td class="org-right">0.99</td>
+<td class="org-right">1.23</td>
+<td class="org-right">2</td>
+</tr>
+
+<tr>
+<td class="org-left">Lambda[3, 1]</td>
+<td class="org-right">-0.07</td>
+<td class="org-right">1.78</td>
+<td class="org-right">1.3</td>
+<td class="org-right">2</td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+</div>
+
+<div id="outline-container-orgafd239e" class="outline-3">
+<h3 id="orgafd239e"><span class="section-number-3">6.4.</span> Convergence criteria</h3>
+<div class="outline-text-3" id="text-6-4">
+<p>
+We compute the mean r_hat for each category of parameters.
+</p>
+
+<div class="org-src-container">
+<pre class="src src-python"><span class="org-comment-delimiter"># </span><span class="org-comment">Compute r_hat mean and std</span>
+<span class="org-variable-name">rhat_alpha_mean</span> = <span class="org-builtin">round</span>(alpha_est[<span class="org-string">"r_hat"</span>].mean(), 2)
+<span class="org-variable-name">rhat_alpha_std</span> = <span class="org-builtin">round</span>(alpha_est[<span class="org-string">"r_hat"</span>].std(), 2)
+<span class="org-variable-name">rhat_beta_mean</span> = <span class="org-builtin">round</span>(beta_est[<span class="org-string">"r_hat"</span>].mean(), 2)
+<span class="org-variable-name">rhat_beta_std</span> = <span class="org-builtin">round</span>(beta_est[<span class="org-string">"r_hat"</span>].std(), 2)
+<span class="org-variable-name">rhat_W_mean</span> = <span class="org-builtin">round</span>(W_est[<span class="org-string">"r_hat"</span>].mean(), 2)
+<span class="org-variable-name">rhat_W_std</span> = <span class="org-builtin">round</span>(W_est[<span class="org-string">"r_hat"</span>].std(), 2)
+<span class="org-variable-name">rhat_lambda_mean</span> = <span class="org-builtin">round</span>(lambda_est[<span class="org-string">"r_hat"</span>].mean(), 2)
+<span class="org-variable-name">rhat_lambda_std</span> = <span class="org-builtin">round</span>(lambda_est[<span class="org-string">"r_hat"</span>].std(), 2)
+<span class="org-variable-name">rhat_lambda_diag_mean</span> = <span class="org-builtin">round</span>(lambda_est.loc[[<span class="org-string">"Lambda[0, 0]"</span>, <span class="org-string">"Lambda[1, 1]"</span>], [<span class="org-string">"r_hat"</span>]][<span class="org-string">"r_hat"</span>].mean(), 2)
+<span class="org-variable-name">rhat_lambda_diag_std</span> = <span class="org-builtin">round</span>(lambda_est.loc[[<span class="org-string">"Lambda[0, 0]"</span>, <span class="org-string">"Lambda[1, 1]"</span>], [<span class="org-string">"r_hat"</span>]][<span class="org-string">"r_hat"</span>].std(), 2)
+<span class="org-variable-name">rhat_lambda_high_mean</span> = <span class="org-builtin">round</span>(lambda_est.loc[[<span class="org-string">"Lambda[2, 0]"</span>, <span class="org-string">"Lambda[3, 1]"</span>], [<span class="org-string">"r_hat"</span>]][<span class="org-string">"r_hat"</span>].mean(), 2)
+<span class="org-variable-name">rhat_lambda_high_std</span> = <span class="org-builtin">round</span>(lambda_est.loc[[<span class="org-string">"Lambda[2, 0]"</span>, <span class="org-string">"Lambda[3, 1]"</span>], [<span class="org-string">"r_hat"</span>]][<span class="org-string">"r_hat"</span>].std(), 2)
+
+<span class="org-comment-delimiter"># </span><span class="org-comment">Build dataframe</span>
+<span class="org-variable-name">par_names</span> = [<span class="org-string">"alpha"</span>, <span class="org-string">"beta"</span>, <span class="org-string">"W"</span>, <span class="org-string">"lambda"</span>, <span class="org-string">"lambda_diag"</span>, <span class="org-string">"lambda_high"</span>]
+<span class="org-variable-name">mean_val</span> = [<span class="org-builtin">eval</span>(<span class="org-string">"rhat_"</span> + x + <span class="org-string">"_mean"</span>) <span class="org-keyword">for</span> x <span class="org-keyword">in</span> par_names]
+<span class="org-variable-name">std_val</span> = [<span class="org-builtin">eval</span>(<span class="org-string">"rhat_"</span> + x + <span class="org-string">"_std"</span>) <span class="org-keyword">for</span> x <span class="org-keyword">in</span> par_names]
+
+<span class="org-variable-name">rhat_dic</span> = {<span class="org-string">"par"</span>: par_names,
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-string">"r_hat_mean"</span>: mean_val, <span class="org-string">"rhat_std"</span>: std_val}
+<span class="org-variable-name">rhat_df</span> = pd.DataFrame(rhat_dic)
+tabulate(rhat_df, headers=<span class="org-string">"keys"</span>, tablefmt=<span class="org-string">"orgtbl"</span>, showindex=<span class="org-constant">False</span>)
+</pre>
+</div>
+
+<table>
+
+
+<colgroup>
+<col  class="org-left">
+
+<col  class="org-right">
+
+<col  class="org-right">
+</colgroup>
+<thead>
+<tr>
+<th scope="col" class="org-left">par</th>
+<th scope="col" class="org-right">r_hat_mean</th>
+<th scope="col" class="org-right">rhat_std</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="org-left">alpha</td>
+<td class="org-right">1</td>
+<td class="org-right">0</td>
+</tr>
+
+<tr>
+<td class="org-left">beta</td>
+<td class="org-right">1</td>
+<td class="org-right">0</td>
+</tr>
+
+<tr>
+<td class="org-left">W</td>
+<td class="org-right">1.11</td>
+<td class="org-right">0.07</td>
+</tr>
+
+<tr>
+<td class="org-left">lambda</td>
+<td class="org-right">1.14</td>
+<td class="org-right">0.09</td>
+</tr>
+
+<tr>
+<td class="org-left">lambda_diag</td>
+<td class="org-right">1.03</td>
+<td class="org-right">0.03</td>
+</tr>
+
+<tr>
+<td class="org-left">lambda_high</td>
+<td class="org-right">1.27</td>
+<td class="org-right">0.05</td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+
+
+<div id="outline-container-org9820d6d" class="outline-3">
+<h3 id="org9820d6d"><span class="section-number-3">6.5.</span> Predicted vs. target parameter values</h3>
+<div class="outline-text-3" id="text-6-5">
+<div class="org-src-container">
+<pre class="src src-python"><span class="org-comment-delimiter"># </span><span class="org-comment">alpha</span>
+<span class="org-variable-name">f</span> = out_dir + <span class="org-string">"alpha.png"</span>
+<span class="org-variable-name">fig</span>, <span class="org-variable-name">ax</span> = plt.subplots(figsize=(6, 6))
+ax.scatter(alpha_target, alpha_est[<span class="org-string">"mean"</span>], c=<span class="org-string">".3"</span>)
+ax.axline((1, 1), slope=1, ls=<span class="org-string">"--"</span>, c=<span class="org-string">".3"</span>)
+ax.set_title(<span class="org-string">"alpha"</span>)
+fig.savefig(f)
+
+<span class="org-comment-delimiter"># </span><span class="org-comment">beta</span>
+f = out_dir + <span class="org-string">"beta.png"</span>
+fig, ax = plt.subplots(figsize=(6, 6))
+ax.scatter(beta_target.flatten(), beta_est[<span class="org-string">"mean"</span>], c=<span class="org-string">".3"</span>)
+ax.axline((1, 1), slope=1, ls=<span class="org-string">"--"</span>, c=<span class="org-string">".3"</span>)
+ax.set_title(<span class="org-string">"beta"</span>)
+fig.savefig(f)
+
+<span class="org-comment-delimiter"># </span><span class="org-comment">W_0</span>
+f = out_dir + <span class="org-string">"W_0.png"</span>
+fig, ax = plt.subplots(figsize=(6, 6))
+ax.scatter(W_target[:, 0], W_0_est[<span class="org-string">"mean"</span>], c=<span class="org-string">".3"</span>)
+ax.axline((1, 1), slope=1, ls=<span class="org-string">"--"</span>, c=<span class="org-string">".3"</span>)
+ax.axline((-1, 1), slope=-1, ls=<span class="org-string">"--"</span>, c=<span class="org-string">".3"</span>)
+ax.set_title(<span class="org-string">"W_0"</span>)
+fig.savefig(f)
+
+<span class="org-comment-delimiter"># </span><span class="org-comment">W_1</span>
+f = out_dir + <span class="org-string">"W_1.png"</span>
+fig, ax = plt.subplots(figsize=(6, 6))
+ax.scatter(W_target[:, 1], W_1_est[<span class="org-string">"mean"</span>], c=<span class="org-string">".3"</span>)
+ax.axline((1, 1), slope=1, ls=<span class="org-string">"--"</span>, c=<span class="org-string">".3"</span>)
+ax.axline((-1, 1), slope=-1, ls=<span class="org-string">"--"</span>, c=<span class="org-string">".3"</span>)
+ax.set_title(<span class="org-string">"W_1"</span>)
+fig.savefig(f)
+
+<span class="org-comment-delimiter"># </span><span class="org-comment">lambda_0</span>
+f = out_dir + <span class="org-string">"lambda_0.png"</span>
+fig, ax = plt.subplots(figsize=(6, 6))
+ax.scatter(lambda_target[:, 0], lambda_0_est[<span class="org-string">"mean"</span>], c=<span class="org-string">".3"</span>)
+ax.axline((1, 1), slope=1, ls=<span class="org-string">"--"</span>, c=<span class="org-string">".3"</span>)
+ax.axline((-1, 1), slope=-1, ls=<span class="org-string">"--"</span>, c=<span class="org-string">".3"</span>)
+ax.set_title(<span class="org-string">"lambda_0"</span>)
+fig.savefig(f)
+
+<span class="org-comment-delimiter"># </span><span class="org-comment">lambda_1</span>
+f = out_dir + <span class="org-string">"lambda_1.png"</span>
+fig, ax = plt.subplots(figsize=(6, 6))
+ax.scatter(lambda_target[:, 1], lambda_1_est[<span class="org-string">"mean"</span>], c=<span class="org-string">".3"</span>)
+ax.axline((1, 1), slope=1, ls=<span class="org-string">"--"</span>, c=<span class="org-string">".3"</span>)
+ax.axline((-1, 1), slope=-1, ls=<span class="org-string">"--"</span>, c=<span class="org-string">".3"</span>)
+ax.set_title(<span class="org-string">"lambda_1"</span>)
+fig.savefig(f)
+
+<span class="org-comment-delimiter"># </span><span class="org-comment">W_lambda</span>
+W_lambda_est = np.matmul(
+<span class="org-highlight-indentation"> </span>   np.asarray(W_est[<span class="org-string">"mean"</span>]).reshape(n_sites, n_q),
+<span class="org-highlight-indentation"> </span>   np.asarray(lambda_est[<span class="org-string">"mean"</span>]).reshape(n_species, n_q).transpose())
+f = out_dir + <span class="org-string">"W_lambda.png"</span>
+fig, ax = plt.subplots(figsize=(6, 6))
+ax.scatter(Wlambda_target.flatten(), W_lambda_est.flatten(), c=<span class="org-string">".3"</span>)
+ax.axline((1, 1), slope=1, ls=<span class="org-string">"--"</span>, c=<span class="org-string">".3"</span>)
+ax.set_title(<span class="org-string">"W_lambda"</span>)
+fig.savefig(f)
+</pre>
+</div>
+
+
+<figure id="org3b4973f">
+<img src="outputs/simulated-data-bad-constraints/W_0.png" alt="W_0.png" width="450">
+
+</figure>
+
+
+<figure id="orge4c99eb">
+<img src="outputs/simulated-data-bad-constraints/W_1.png" alt="W_1.png" width="450">
+
+</figure>
+
+
+<figure id="orga3a8509">
+<img src="outputs/simulated-data-bad-constraints/lambda_0.png" alt="lambda_0.png" width="450">
+
+</figure>
+
+
+<figure id="org4b18b5e">
+<img src="outputs/simulated-data-bad-constraints/lambda_1.png" alt="lambda_1.png" width="450">
+
+</figure>
+</div>
+</div>
+</div>
+
+<div id="outline-container-orgf6b3f5b" class="outline-2">
+<h2 id="orgf6b3f5b"><span class="section-number-2">7.</span> Correcting for species order</h2>
+<div class="outline-text-2" id="text-7">
+</div>
+<div id="outline-container-org1438f01" class="outline-3">
+<h3 id="org1438f01"><span class="section-number-3">7.1.</span> Sorting species</h3>
+<div class="outline-text-3" id="text-7-1">
+<p>
+Species with high factor values are used for constraints.
+</p>
+
+<div class="org-src-container">
+<pre class="src src-python"><span class="org-variable-name">Y_sort</span> = np.copy(Y)
+<span class="org-variable-name">Y_sort</span>[:, 0] = Y[:, 2]
+<span class="org-variable-name">Y_sort</span>[:, 1] = Y[:, 3]
+<span class="org-variable-name">Y_sort</span>[:, 2] = Y[:, 0]
+<span class="org-variable-name">Y_sort</span>[:, 3] = Y[:, 1]
+<span class="org-variable-name">Y</span> = Y_sort
+</pre>
+</div>
+</div>
+</div>
+
+<div id="outline-container-org75ed33c" class="outline-3">
+<h3 id="org75ed33c"><span class="section-number-3">7.2.</span> Statistical model</h3>
+<div class="outline-text-3" id="text-7-2">
+<div class="org-src-container">
+<pre class="src src-python"><span class="org-keyword">with</span> pm.Model() <span class="org-keyword">as</span> <span class="org-variable-name">model_sort</span>:
+<span class="org-highlight-indentation"> </span>   <span class="org-comment-delimiter"># </span><span class="org-comment">Hyperpriors</span>
+<span class="org-highlight-indentation"> </span>   sigma_alpha = pm.HalfNormal(<span class="org-string">"sigma_alpha"</span>, sigma=1.0)
+<span class="org-highlight-indentation"> </span>   <span class="org-comment-delimiter"># </span><span class="org-comment">Priors</span>
+<span class="org-highlight-indentation"> </span>   <span class="org-comment-delimiter"># </span><span class="org-comment">Site random effect</span>
+<span class="org-highlight-indentation"> </span>   alpha = pm.Normal(<span class="org-string">"alpha"</span>, mu=0, sigma=sigma_alpha, shape=n_sites)
+<span class="org-highlight-indentation"> </span>   <span class="org-comment-delimiter"># </span><span class="org-comment">Latent variables</span>
+<span class="org-highlight-indentation"> </span>   W = pm.Normal(<span class="org-string">"W"</span>, mu=0, sigma=1, shape=(n_sites, n_q))
+<span class="org-highlight-indentation"> </span>   <span class="org-comment-delimiter"># </span><span class="org-comment">Species effects</span>
+<span class="org-highlight-indentation"> </span>   beta = pm.Normal(<span class="org-string">"beta"</span>, mu=0, sigma=1, shape=(n_species, n_p))
+<span class="org-highlight-indentation"> </span>   <span class="org-comment-delimiter"># </span><span class="org-comment">Factor loadings with constraints</span>
+<span class="org-highlight-indentation"> </span>   <span class="org-comment-delimiter"># </span><span class="org-comment">Diagonal</span>
+<span class="org-highlight-indentation"> </span>   Lambda1 = pt.set_subtensor(
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   Lambda0[np.arange(n_q), np.arange(n_q)],
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   pm.HalfNormal(<span class="org-string">"Lambda_diag"</span>, sigma=HALFNORMAL_SCALE, shape=n_q))
+<span class="org-highlight-indentation"> </span>   <span class="org-comment-delimiter"># </span><span class="org-comment">Inferior</span>
+<span class="org-highlight-indentation"> </span>   Lambda2 = pt.set_subtensor(
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   Lambda1[1, 0],
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   pm.Normal(<span class="org-string">"Lambda_inf"</span>, mu=0, sigma=1))
+<span class="org-highlight-indentation"> </span>   <span class="org-comment-delimiter"># </span><span class="org-comment">Block</span>
+<span class="org-highlight-indentation"> </span>   Lambda = pm.Deterministic(
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-string">"Lambda"</span>,
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   pt.set_subtensor(
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   Lambda2[n_q:],
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   pm.Normal(<span class="org-string">"Lambda_block"</span>, mu=0, sigma=1, shape=(n_species-n_q, n_q))))
+<span class="org-highlight-indentation"> </span>   <span class="org-comment-delimiter"># </span><span class="org-comment">Likelihood</span>
+<span class="org-highlight-indentation"> </span>   Xbeta = pm.math.dot(X, beta.transpose())
+<span class="org-highlight-indentation"> </span>   Wlambda = pm.math.dot(W, Lambda.transpose()) 
+<span class="org-highlight-indentation"> </span>   logit_theta = alpha[:, np.newaxis] + Xbeta + Wlambda
+<span class="org-highlight-indentation"> </span>   obs = pm.Bernoulli(<span class="org-string">"obs"</span>, logit_p=logit_theta, observed=Y)
+</pre>
+</div>
+
+<div class="org-src-container">
+<pre class="src src-python"><span class="org-comment-delimiter"># </span><span class="org-comment">Inference</span>
+<span class="org-keyword">with</span> <span class="org-variable-name">model_sort</span>:
+<span class="org-highlight-indentation"> </span>   trace_sort = pm.sample(**SAMPLE_KWARGS)
+</pre>
+</div>
+
+<p>
+Save model with cloudpickle.
+</p>
+
+<div class="org-src-container">
+<pre class="src src-python"><span class="org-variable-name">out_dir</span> = <span class="org-string">"outputs/simulated-data-bad-constraints/"</span>
+<span class="org-keyword">with</span> <span class="org-builtin">open</span>(out_dir + <span class="org-string">"model_trace_sort.pkl"</span>, <span class="org-string">"wb"</span>) <span class="org-keyword">as</span> <span class="org-variable-name">f</span>:
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>model_trace_dump = cloudpickle.dumps({<span class="org-string">'model'</span>: model_sort, <span class="org-string">'trace'</span>: trace_sort})
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>f.write(model_trace_dump)
+</pre>
+</div>
+</div>
+</div>
+
+<div id="outline-container-org838205c" class="outline-3">
+<h3 id="org838205c"><span class="section-number-3">7.3.</span> Convergence and model performance</h3>
+<div class="outline-text-3" id="text-7-3">
+<div class="org-src-container">
+<pre class="src src-python"><span class="org-keyword">with</span> <span class="org-variable-name">model_sort</span>:
+<span class="org-highlight-indentation"> </span>   alpha_est = az.summary(trace_sort, var_names=[<span class="org-string">"alpha"</span>], round_to=2)
+<span class="org-highlight-indentation"> </span>   beta_est = az.summary(trace_sort, var_names=[<span class="org-string">"beta"</span>], round_to=2)
+<span class="org-highlight-indentation"> </span>   lambda_est = az.summary(trace_sort, var_names=[<span class="org-string">"Lambda"</span>], round_to=2)
+<span class="org-highlight-indentation"> </span>   lambda_0_est = az.summary(trace_sort,
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span> var_names=[<span class="org-string">"Lambda"</span>],
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span> coords={<span class="org-string">"Lambda_dim_1"</span>: [0]},
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span> round_to=2)
+<span class="org-highlight-indentation"> </span>   lambda_1_est = az.summary(trace_sort,
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span> var_names=[<span class="org-string">"Lambda"</span>],
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span> coords={<span class="org-string">"Lambda_dim_1"</span>: [1]},
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span> round_to=2)
+<span class="org-highlight-indentation"> </span>   W_est = az.summary(trace_sort, var_names=[<span class="org-string">"W"</span>], round_to=2)
+<span class="org-highlight-indentation"> </span>   W_0_est = az.summary(trace_sort, var_names=[<span class="org-string">"W"</span>],
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>coords={<span class="org-string">"W_dim_1"</span>: [0]},
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>round_to=2)
+<span class="org-highlight-indentation"> </span>   W_1_est = az.summary(trace_sort, var_names=[<span class="org-string">"W"</span>],
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>coords={<span class="org-string">"W_dim_1"</span>: [1]},
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>round_to=2)
+</pre>
+</div>
+
+<div class="org-src-container">
+<pre class="src src-python"><span class="org-variable-name">lambda_diag</span> = lambda_est.loc[[<span class="org-string">"Lambda[0, 0]"</span>, <span class="org-string">"Lambda[1, 1]"</span>], [<span class="org-string">"mean"</span>, <span class="org-string">"sd"</span>, <span class="org-string">"r_hat"</span>]]
+<span class="org-variable-name">lambda_diag</span>[<span class="org-string">"target_value"</span>] = [lambda_target[2, 0], lambda_target[3, 1]]
+<span class="org-variable-name">col_names</span> = [<span class="org-string">"Distance"</span>, <span class="org-string">"Npixels"</span>, <span class="org-string">"Area"</span>, <span class="org-string">"Cumulation"</span>, <span class="org-string">"Percentage"</span>]
+tabulate(lambda_diag, headers=<span class="org-string">"keys"</span>, tablefmt=<span class="org-string">"orgtbl"</span>, showindex=<span class="org-constant">True</span>)
+</pre>
+</div>
+
+<table>
+
+
+<colgroup>
+<col  class="org-left">
+
+<col  class="org-right">
+
+<col  class="org-right">
+
+<col  class="org-right">
+
+<col  class="org-right">
+</colgroup>
+<thead>
+<tr>
+<th scope="col" class="org-left">&#xa0;</th>
+<th scope="col" class="org-right">mean</th>
+<th scope="col" class="org-right">sd</th>
+<th scope="col" class="org-right">r_hat</th>
+<th scope="col" class="org-right">target_value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="org-left">Lambda[0, 0]</td>
+<td class="org-right">1.3</td>
+<td class="org-right">0.57</td>
+<td class="org-right">1</td>
+<td class="org-right">2</td>
+</tr>
+
+<tr>
+<td class="org-left">Lambda[1, 1]</td>
+<td class="org-right">3.04</td>
+<td class="org-right">0.86</td>
+<td class="org-right">1</td>
+<td class="org-right">2</td>
+</tr>
+</tbody>
+</table>
+
+<div class="org-src-container">
+<pre class="src src-python"><span class="org-comment-delimiter"># </span><span class="org-comment">Compute r_hat mean and std</span>
+<span class="org-variable-name">rhat_alpha_mean</span> = <span class="org-builtin">round</span>(alpha_est[<span class="org-string">"r_hat"</span>].mean(), 2)
+<span class="org-variable-name">rhat_alpha_std</span> = <span class="org-builtin">round</span>(alpha_est[<span class="org-string">"r_hat"</span>].std(), 2)
+<span class="org-variable-name">rhat_beta_mean</span> = <span class="org-builtin">round</span>(beta_est[<span class="org-string">"r_hat"</span>].mean(), 2)
+<span class="org-variable-name">rhat_beta_std</span> = <span class="org-builtin">round</span>(beta_est[<span class="org-string">"r_hat"</span>].std(), 2)
+<span class="org-variable-name">rhat_W_mean</span> = <span class="org-builtin">round</span>(W_est[<span class="org-string">"r_hat"</span>].mean(), 2)
+<span class="org-variable-name">rhat_W_std</span> = <span class="org-builtin">round</span>(W_est[<span class="org-string">"r_hat"</span>].std(), 2)
+<span class="org-variable-name">rhat_lambda_mean</span> = <span class="org-builtin">round</span>(lambda_est[<span class="org-string">"r_hat"</span>].mean(), 2)
+<span class="org-variable-name">rhat_lambda_std</span> = <span class="org-builtin">round</span>(lambda_est[<span class="org-string">"r_hat"</span>].std(), 2)
+<span class="org-variable-name">rhat_lambda_diag_mean</span> = <span class="org-builtin">round</span>(lambda_est.loc[[<span class="org-string">"Lambda[0, 0]"</span>, <span class="org-string">"Lambda[1, 1]"</span>], [<span class="org-string">"r_hat"</span>]][<span class="org-string">"r_hat"</span>].mean(), 2)
+<span class="org-variable-name">rhat_lambda_diag_std</span> = <span class="org-builtin">round</span>(lambda_est.loc[[<span class="org-string">"Lambda[0, 0]"</span>, <span class="org-string">"Lambda[1, 1]"</span>], [<span class="org-string">"r_hat"</span>]][<span class="org-string">"r_hat"</span>].std(), 2)
+<span class="org-variable-name">rhat_lambda_small_mean</span> = <span class="org-builtin">round</span>(lambda_est.loc[[<span class="org-string">"Lambda[2, 0]"</span>, <span class="org-string">"Lambda[3, 1]"</span>], [<span class="org-string">"r_hat"</span>]][<span class="org-string">"r_hat"</span>].mean(), 2)
+<span class="org-variable-name">rhat_lambda_small_std</span> = <span class="org-builtin">round</span>(lambda_est.loc[[<span class="org-string">"Lambda[2, 0]"</span>, <span class="org-string">"Lambda[3, 1]"</span>], [<span class="org-string">"r_hat"</span>]][<span class="org-string">"r_hat"</span>].std(), 2)
+
+<span class="org-comment-delimiter"># </span><span class="org-comment">Build dataframe</span>
+<span class="org-variable-name">par_names</span> = [<span class="org-string">"alpha"</span>, <span class="org-string">"beta"</span>, <span class="org-string">"W"</span>, <span class="org-string">"lambda"</span>, <span class="org-string">"lambda_diag"</span>, <span class="org-string">"lambda_small"</span>]
+<span class="org-variable-name">mean_val</span> = [<span class="org-builtin">eval</span>(<span class="org-string">"rhat_"</span> + x + <span class="org-string">"_mean"</span>) <span class="org-keyword">for</span> x <span class="org-keyword">in</span> par_names]
+<span class="org-variable-name">std_val</span> = [<span class="org-builtin">eval</span>(<span class="org-string">"rhat_"</span> + x + <span class="org-string">"_std"</span>) <span class="org-keyword">for</span> x <span class="org-keyword">in</span> par_names]
+
+<span class="org-variable-name">rhat_dic</span> = {<span class="org-string">"par"</span>: par_names,
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-string">"r_hat_mean"</span>: mean_val, <span class="org-string">"rhat_std"</span>: std_val}
+<span class="org-variable-name">rhat_df</span> = pd.DataFrame(rhat_dic)
+tabulate(rhat_df, headers=<span class="org-string">"keys"</span>, tablefmt=<span class="org-string">"orgtbl"</span>, showindex=<span class="org-constant">False</span>)
+</pre>
+</div>
+
+<table>
+
+
+<colgroup>
+<col  class="org-left">
+
+<col  class="org-right">
+
+<col  class="org-right">
+</colgroup>
+<thead>
+<tr>
+<th scope="col" class="org-left">par</th>
+<th scope="col" class="org-right">r_hat_mean</th>
+<th scope="col" class="org-right">rhat_std</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="org-left">alpha</td>
+<td class="org-right">1</td>
+<td class="org-right">0</td>
+</tr>
+
+<tr>
+<td class="org-left">beta</td>
+<td class="org-right">1</td>
+<td class="org-right">0</td>
+</tr>
+
+<tr>
+<td class="org-left">W</td>
+<td class="org-right">1</td>
+<td class="org-right">0</td>
+</tr>
+
+<tr>
+<td class="org-left">lambda</td>
+<td class="org-right">1</td>
+<td class="org-right">0</td>
+</tr>
+
+<tr>
+<td class="org-left">lambda_diag</td>
+<td class="org-right">1</td>
+<td class="org-right">0</td>
+</tr>
+
+<tr>
+<td class="org-left">lambda_small</td>
+<td class="org-right">1</td>
+<td class="org-right">0</td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+
+
+<div id="outline-container-orgb975ce8" class="outline-3">
+<h3 id="orgb975ce8"><span class="section-number-3">7.4.</span> Predicted vs. target parameter values</h3>
+<div class="outline-text-3" id="text-7-4">
+<div class="org-src-container">
+<pre class="src src-python"><span class="org-comment-delimiter"># </span><span class="org-comment">Sorted index</span>
+<span class="org-builtin">id</span> = [2, 3, 0, 1] + <span class="org-builtin">list</span>(np.arange(4, n_species))
+
+<span class="org-comment-delimiter"># </span><span class="org-comment">alpha</span>
+<span class="org-variable-name">f</span> = out_dir + <span class="org-string">"alpha_sort.png"</span>
+<span class="org-variable-name">fig</span>, <span class="org-variable-name">ax</span> = plt.subplots(figsize=(6, 6))
+ax.scatter(alpha_target, alpha_est[<span class="org-string">"mean"</span>], c=<span class="org-string">".3"</span>)
+ax.axline((1, 1), slope=1, ls=<span class="org-string">"--"</span>, c=<span class="org-string">".3"</span>)
+ax.set_title(<span class="org-string">"alpha_sort"</span>)
+fig.savefig(f)
+
+<span class="org-comment-delimiter"># </span><span class="org-comment">beta</span>
+f = out_dir + <span class="org-string">"beta_sort.png"</span>
+fig, ax = plt.subplots(figsize=(6, 6))
+beta_hat = np.asarray(beta_est[<span class="org-string">"mean"</span>]).reshape(n_species, n_p)[<span class="org-builtin">id</span>, :]
+ax.scatter(beta_target.flatten(), beta_hat.flatten(), c=<span class="org-string">".3"</span>)
+ax.axline((1, 1), slope=1, ls=<span class="org-string">"--"</span>, c=<span class="org-string">".3"</span>)
+ax.set_title(<span class="org-string">"beta_sort"</span>)
+fig.savefig(f)
+
+<span class="org-comment-delimiter"># </span><span class="org-comment">W_0</span>
+f = out_dir + <span class="org-string">"W_0_sort.png"</span>
+fig, ax = plt.subplots(figsize=(6, 6))
+ax.scatter(W_target[:, 0], W_0_est[<span class="org-string">"mean"</span>], c=<span class="org-string">".3"</span>)
+ax.axline((1, 1), slope=1, ls=<span class="org-string">"--"</span>, c=<span class="org-string">".3"</span>)
+ax.axline((-1, 1), slope=-1, ls=<span class="org-string">"--"</span>, c=<span class="org-string">".3"</span>)
+ax.set_title(<span class="org-string">"W_0_sort"</span>)
+fig.savefig(f)
+
+<span class="org-comment-delimiter"># </span><span class="org-comment">W_1</span>
+f = out_dir + <span class="org-string">"W_1_sort.png"</span>
+fig, ax = plt.subplots(figsize=(6, 6))
+ax.scatter(W_target[:, 1], W_1_est[<span class="org-string">"mean"</span>], c=<span class="org-string">".3"</span>)
+ax.axline((1, 1), slope=1, ls=<span class="org-string">"--"</span>, c=<span class="org-string">".3"</span>)
+ax.axline((-1, 1), slope=-1, ls=<span class="org-string">"--"</span>, c=<span class="org-string">".3"</span>)
+ax.set_title(<span class="org-string">"W_1_sort"</span>)
+fig.savefig(f)
+
+<span class="org-comment-delimiter"># </span><span class="org-comment">lambda_0</span>
+f = out_dir + <span class="org-string">"lambda_0_sort.png"</span>
+fig, ax = plt.subplots(figsize=(6, 6))
+lambda_0_hat = lambda_0_est[<span class="org-string">"mean"</span>][<span class="org-builtin">id</span>]
+ax.scatter(lambda_target[:, 0], lambda_0_hat, c=<span class="org-string">".3"</span>)
+ax.axline((1, 1), slope=1, ls=<span class="org-string">"--"</span>, c=<span class="org-string">".3"</span>)
+ax.axline((-1, 1), slope=-1, ls=<span class="org-string">"--"</span>, c=<span class="org-string">".3"</span>)
+ax.set_title(<span class="org-string">"lambda_0_sort"</span>)
+fig.savefig(f)
+
+<span class="org-comment-delimiter"># </span><span class="org-comment">lambda_1</span>
+f = out_dir + <span class="org-string">"lambda_1_sort.png"</span>
+fig, ax = plt.subplots(figsize=(6, 6))
+lambda_1_hat = lambda_1_est[<span class="org-string">"mean"</span>][<span class="org-builtin">id</span>]
+ax.scatter(lambda_target[:, 1], lambda_1_hat, c=<span class="org-string">".3"</span>)
+ax.axline((1, 1), slope=1, ls=<span class="org-string">"--"</span>, c=<span class="org-string">".3"</span>)
+ax.axline((-1, 1), slope=-1, ls=<span class="org-string">"--"</span>, c=<span class="org-string">".3"</span>)
+ax.set_title(<span class="org-string">"lambda_1_sort"</span>)
+fig.savefig(f)
+
+<span class="org-comment-delimiter"># </span><span class="org-comment">W_lambda</span>
+lambda_hat = np.asarray(lambda_est[<span class="org-string">"mean"</span>]).reshape(n_species, n_q)[<span class="org-builtin">id</span>, :]
+W_lambda_est = np.matmul(
+<span class="org-highlight-indentation"> </span>   np.asarray(W_est[<span class="org-string">"mean"</span>]).reshape(n_sites, n_q),
+<span class="org-highlight-indentation"> </span>   lambda_hat.transpose())
+f = out_dir + <span class="org-string">"W_lambda_sort.png"</span>
+fig, ax = plt.subplots(figsize=(6, 6))
+ax.scatter(Wlambda_target.flatten(), W_lambda_est.flatten(), c=<span class="org-string">".3"</span>)
+ax.axline((1, 1), slope=1, ls=<span class="org-string">"--"</span>, c=<span class="org-string">".3"</span>)
+ax.set_title(<span class="org-string">"W_lambda_sort"</span>)
+fig.savefig(f)
+</pre>
+</div>
+
+
+<figure id="orgd2d2f29">
+<img src="outputs/simulated-data-bad-constraints/W_0.png" alt="W_0.png" width="450" style="float:left;">
+
+</figure>
+
+
+<figure id="orgb283f78">
+<img src="outputs/simulated-data-bad-constraints/W_0_sort.png" alt="W_0_sort.png" width="450">
+
+</figure>
+
+
+<figure id="org4f3ab54">
+<img src="outputs/simulated-data-bad-constraints/W_1.png" alt="W_1.png" width="450" style="float:left;">
+
+</figure>
+
+
+<figure id="org3460dbc">
+<img src="outputs/simulated-data-bad-constraints/W_1_sort.png" alt="W_1_sort.png" width="450">
+
+</figure>
+
+
+<figure id="orgc70f0aa">
+<img src="outputs/simulated-data-bad-constraints/lambda_0.png" alt="lambda_0.png" width="450" style="float:left;">
+
+</figure>
+
+
+<figure id="orge1334fa">
+<img src="outputs/simulated-data-bad-constraints/lambda_0_sort.png" alt="lambda_0_sort.png" width="450">
+
+</figure>
+
+
+<figure id="orgc29b7b2">
+<img src="outputs/simulated-data-bad-constraints/lambda_1.png" alt="lambda_1.png" width="450" style="float:left;">
+
+</figure>
+
+
+<figure id="org2fff948">
+<img src="outputs/simulated-data-bad-constraints/lambda_1_sort.png" alt="lambda_1_sort.png" width="450">
+
+</figure>
+</div>
+</div>
+</div>
+
+<div id="outline-container-org841980f" class="outline-2">
+<h2 id="org841980f"><span class="section-number-2">8.</span> Automatic sorting of species with PCA on residuals</h2>
+<div class="outline-text-2" id="text-8">
+</div>
+<div id="outline-container-org5221758" class="outline-3">
+<h3 id="org5221758"><span class="section-number-3">8.1.</span> Unsorted data</h3>
+<div class="outline-text-3" id="text-8-1">
+<div class="org-src-container">
+<pre class="src src-python"><span class="org-comment-delimiter"># </span><span class="org-comment">Set seed for repeatability</span>
+<span class="org-variable-name">SEED</span> = 1234
+<span class="org-variable-name">rng</span> = np.random.default_rng(SEED)
+
+<span class="org-comment-delimiter"># </span><span class="org-comment">Number of sites and species</span>
+<span class="org-variable-name">n_sites</span> = 100
+<span class="org-variable-name">n_species</span> = 30
+<span class="org-comment-delimiter"># </span><span class="org-comment">Number of latent variables</span>
+<span class="org-variable-name">n_q</span> = 2
+
+<span class="org-comment-delimiter"># </span><span class="org-comment">Ecological variables</span>
+<span class="org-variable-name">Int</span> = np.array([1] * n_sites)
+<span class="org-variable-name">x1</span> = rng.standard_normal(size=n_sites)
+x2 = rng.standard_normal(size=n_sites)
+X = np.array([Int, x1, x2]).transpose()
+<span class="org-builtin">print</span>(<span class="org-string">"X.shape:"</span>)
+<span class="org-builtin">print</span>(X.shape)
+<span class="org-builtin">print</span>(<span class="org-string">"\nX[:5,]:"</span>)
+<span class="org-builtin">print</span>(X[:5,])
+<span class="org-comment-delimiter"># </span><span class="org-comment">Number of explicative variables</span>
+n_p = X.shape[1]
+
+<span class="org-comment-delimiter"># </span><span class="org-comment">Latent variables</span>
+w1 = rng.standard_normal(size=n_sites)
+w2 = rng.standard_normal(size=n_sites)
+W_target = np.array([w1, w2]).transpose()
+<span class="org-builtin">print</span>(<span class="org-string">"\nW.target.shape:"</span>)
+<span class="org-builtin">print</span>(W_target.shape)
+<span class="org-builtin">print</span>(<span class="org-string">"\nW_target[:5,]:"</span>)
+<span class="org-builtin">print</span>(W_target[:5,])
+
+<span class="org-comment-delimiter"># </span><span class="org-comment">Fixed species effects beta</span>
+beta_target = rng.uniform(-1, 1, n_p*n_species).reshape(n_species, n_p)
+
+<span class="org-comment-delimiter"># </span><span class="org-comment">Factor loading lambda</span>
+lambda_target = rng.uniform(-1, 1, n_q*n_species).reshape(n_species, n_q)
+<span class="org-comment-delimiter"># </span><span class="org-comment">Constraints on lambda</span>
+lambda_target[0, 1] = 0
+lambda_target[np.arange(n_q), np.arange(n_q)] =  np.array([-0.1] * n_q)
+lambda_target[2, 0] = 2
+lambda_target[2, 1] = 0
+lambda_target[3, 0] = rng.uniform(-0.1, 0.1)
+lambda_target[3, 1] = 2
+<span class="org-builtin">print</span>(<span class="org-string">"\nlambda_target.shape:"</span>)
+<span class="org-builtin">print</span>(lambda_target.shape)
+<span class="org-builtin">print</span>(<span class="org-string">"\nlambda_target[:5,]:"</span>)
+<span class="org-builtin">print</span>(lambda_target[:5,])
+
+<span class="org-comment-delimiter"># </span><span class="org-comment">Variance of random site effects </span>
+sigma_alpha_target = 0.5
+<span class="org-comment-delimiter"># </span><span class="org-comment">Random site effects</span>
+alpha_target = rng.normal(loc=0, scale=sigma_alpha_target, size=n_sites)
+
+<span class="org-comment-delimiter"># </span><span class="org-comment">Probabilities</span>
+Xbeta_target = np.matmul(X, beta_target.transpose())
+Wlambda_target = np.matmul(W_target, lambda_target.transpose()) 
+logit_theta_target = alpha_target[:, np.newaxis] + Xbeta_target + Wlambda_target
+theta_target = inv_logit(logit_theta_target)
+
+<span class="org-comment-delimiter"># </span><span class="org-comment">Simulated occurrences</span>
+Y = rng.binomial(n=1, p=theta_target)
+<span class="org-builtin">print</span>(<span class="org-string">"\nY.shape:"</span>)
+<span class="org-builtin">print</span>(Y.shape)
+</pre>
+</div>
+
+<pre class="example" id="org71d1288">
+X.shape:
+(100, 3)
+
+X[:5,]:
+[[ 1.         -1.60383681  2.25392546]
+ [ 1.          0.06409991  0.1616142 ]
+ [ 1.          0.7408913   0.83377881]
+ [ 1.          0.15261919 -1.58010947]
+ [ 1.          0.86374389  1.01058529]]
+
+W.target.shape:
+(100, 2)
+
+W_target[:5,]:
+[[ 0.73118867 -1.18459707]
+ [-0.22964706 -0.35451603]
+ [ 2.14411198  1.36731227]
+ [ 0.39714586  1.70012206]
+ [ 0.15946658 -1.8795888 ]]
+
+lambda_target.shape:
+(30, 2)
+
+lambda_target[:5,]:
+[[-0.1         0.        ]
+ [ 0.07491686 -0.1       ]
+ [ 2.          0.        ]
+ [ 0.07563471  2.        ]
+ [ 0.19104104 -0.88684922]]
+
+Y.shape:
+(100, 30)
+</pre>
+</div>
+</div>
+
+
+<div id="outline-container-org7c0b297" class="outline-3">
+<h3 id="org7c0b297"><span class="section-number-3">8.2.</span> Statistical model with residuals</h3>
+<div class="outline-text-3" id="text-8-2">
+<div class="org-src-container">
+<pre class="src src-python"><span class="org-keyword">with</span> pm.Model() <span class="org-keyword">as</span> <span class="org-variable-name">model_res</span>:
+<span class="org-highlight-indentation"> </span>   <span class="org-comment-delimiter"># </span><span class="org-comment">Hyperpriors</span>
+<span class="org-highlight-indentation"> </span>   sigma_alpha = pm.HalfNormal(<span class="org-string">"sigma_alpha"</span>, sigma=1.0)
+<span class="org-highlight-indentation"> </span>   <span class="org-comment-delimiter"># </span><span class="org-comment">Priors</span>
+<span class="org-highlight-indentation"> </span>   <span class="org-comment-delimiter"># </span><span class="org-comment">Site random effect</span>
+<span class="org-highlight-indentation"> </span>   alpha = pm.Normal(<span class="org-string">"alpha"</span>, mu=0, sigma=sigma_alpha, shape=n_sites)
+<span class="org-highlight-indentation"> </span>   <span class="org-comment-delimiter"># </span><span class="org-comment">Species effects</span>
+<span class="org-highlight-indentation"> </span>   beta = pm.Normal(<span class="org-string">"beta"</span>, mu=0, sigma=1, shape=(n_species, n_p))
+<span class="org-highlight-indentation"> </span>   <span class="org-comment-delimiter"># </span><span class="org-comment">Likelihood</span>
+<span class="org-highlight-indentation"> </span>   Xbeta = pm.math.dot(X, beta.transpose())
+<span class="org-highlight-indentation"> </span>   m = pm.Deterministic(<span class="org-string">"mu"</span>, alpha[:, np.newaxis] + Xbeta)
+<span class="org-highlight-indentation"> </span>   logit_theta = pm.Normal(<span class="org-string">"logit_theta"</span>, mu=m, sigma=1.0)
+<span class="org-highlight-indentation"> </span>   e = pm.Deterministic(<span class="org-string">"error"</span>, logit_theta - m)
+<span class="org-highlight-indentation"> </span>   obs = pm.Bernoulli(<span class="org-string">"obs"</span>, logit_p=logit_theta, observed=Y)
+</pre>
+</div>
+
+<div class="org-src-container">
+<pre class="src src-python"><span class="org-comment-delimiter"># </span><span class="org-comment">Inference</span>
+<span class="org-keyword">with</span> <span class="org-variable-name">model_res</span>:
+<span class="org-highlight-indentation"> </span>   trace_res = pm.sample(**SAMPLE_KWARGS)
+</pre>
+</div>
+
+<p>
+Save model with cloudpickle.
+</p>
+
+<div class="org-src-container">
+<pre class="src src-python"><span class="org-variable-name">out_dir</span> = <span class="org-string">"outputs/simulated-data-bad-constraints/"</span>
+<span class="org-keyword">with</span> <span class="org-builtin">open</span>(out_dir + <span class="org-string">"model_trace_res.pkl"</span>, <span class="org-string">"wb"</span>) <span class="org-keyword">as</span> <span class="org-variable-name">f</span>:
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>model_trace_dump = cloudpickle.dumps({<span class="org-string">'model'</span>: model_res, <span class="org-string">'trace'</span>: trace_res})
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>f.write(model_trace_dump)
+</pre>
+</div>
+
+<p>
+Get residuals.
+</p>
+
+<div class="org-src-container">
+<pre class="src src-python"><span class="org-keyword">with</span> <span class="org-variable-name">model_res</span>:
+<span class="org-highlight-indentation"> </span>   error_est = az.summary(trace_res, var_names=[<span class="org-string">"error"</span>], round_to=2)
+e = np.asarray(error_est[<span class="org-string">"mean"</span>]).reshape(n_sites, n_species)
+</pre>
+</div>
+
+<div class="org-src-container">
+<pre class="src src-python"><span class="org-variable-name">ofile</span> = out_dir + <span class="org-string">"hist_residuals.png"</span>
+<span class="org-variable-name">fig</span> = plt.figure()
+plt.hist(e.flatten(), bins=20)
+fig.savefig(ofile)
+ofile
+</pre>
+</div>
+
+
+<figure id="orga00285e">
+<img src="outputs/simulated-data-bad-constraints/hist_residuals.png" alt="hist_residuals.png" width="900">
+
+</figure>
+</div>
+</div>
+
+<div id="outline-container-orgbf08547" class="outline-3">
+<h3 id="orgbf08547"><span class="section-number-3">8.3.</span> PCA on residuals</h3>
+<div class="outline-text-3" id="text-8-3">
+<p>
+Make the PCA on residuals to find the coordinates of the species on two axis.
+</p>
+
+<div class="org-src-container">
+<pre class="src src-python"><span class="org-keyword">from</span> sklearn.decomposition <span class="org-keyword">import</span> PCA
+<span class="org-keyword">from</span> sklearn.preprocessing <span class="org-keyword">import</span> StandardScaler
+
+<span class="org-variable-name">pca</span> = PCA(n_components=2)
+e_cr = StandardScaler().fit_transform(e)
+pca_features = pca.fit_transform(e_cr)
+pca_features.shape
+pca.explained_variance_ratio_
+pca_comp = pca.components_.transpose()
+<span class="org-builtin">print</span>(pca_comp)
+</pre>
+</div>
+
+<pre class="example" id="orgc2a0da8">
+[[ 0.02200708  0.03714174]
+ [-0.03972373  0.20131744]
+ [-0.11080929  0.34950792]
+ [-0.41483159 -0.15001242]
+ [ 0.27708908  0.08016559]
+ [-0.16439893 -0.01359622]
+ [-0.08086589  0.33208507]
+ [-0.30957941  0.04604344]
+ [ 0.06986883  0.0783937 ]
+ [-0.19244083 -0.17687477]
+ [-0.24071652 -0.0151952 ]
+ [ 0.23520551 -0.07929697]
+ [ 0.21151489  0.17628384]
+ [ 0.09352463 -0.41952792]
+ [-0.09532357 -0.20568033]
+ [ 0.3149754  -0.13450575]
+ [ 0.19898551 -0.19999564]
+ [ 0.04221887 -0.07582149]
+ [ 0.02644062  0.03382617]
+ [-0.24024139 -0.02290355]
+ [-0.12614607  0.07368796]
+ [-0.06609835  0.05208123]
+ [ 0.03482406  0.20172167]
+ [ 0.01399229  0.11441697]
+ [-0.16435668 -0.16916081]
+ [ 0.03315802 -0.12345654]
+ [ 0.22308479 -0.04357344]
+ [ 0.17408471 -0.14070064]
+ [ 0.24408091  0.15133842]
+ [-0.03440361 -0.43034714]]
+</pre>
+
+<p>
+Identify the species which influences most each component.
+</p>
+
+<div class="org-src-container">
+<pre class="src src-python"><span class="org-variable-name">pca_comp_abs</span> = np.<span class="org-builtin">abs</span>(pca_comp)
+<span class="org-variable-name">sp_sel</span> = np.argmax(pca_comp_abs, axis=0)
+<span class="org-builtin">print</span>(sp_sel)
+</pre>
+</div>
+
+<pre class="example">
+[ 3 29]
+</pre>
+
+
+<p>
+Factor loadings for these two species.
+</p>
+
+<div class="org-src-container">
+<pre class="src src-python"><span class="org-builtin">print</span>(lambda_target[sp_sel, :])
+</pre>
+</div>
+
+<pre class="example">
+[[ 0.07563471  2.        ]
+ [-0.55754592  0.82297802]]
+</pre>
+
+
+<p>
+Sorting species.
+</p>
+
+<div class="org-src-container">
+<pre class="src src-python"><span class="org-variable-name">Y_sort</span> = np.copy(Y)
+<span class="org-variable-name">Y_sort</span>[:, 0] = Y[:, sp_sel[0]]
+<span class="org-variable-name">Y_sort</span>[:, 1] = Y[:, sp_sel[1]]
+Y_sort[:, sp_sel[0]] = Y[:, 0]
+Y_sort[:, sp_sel[1]] = Y[:, 1]
+<span class="org-variable-name">Y</span> = Y_sort
+</pre>
+</div>
+</div>
+</div>
+
+<div id="outline-container-org92987bb" class="outline-3">
+<h3 id="org92987bb"><span class="section-number-3">8.4.</span> Statistical model with sorted species</h3>
+<div class="outline-text-3" id="text-8-4">
+<div class="org-src-container">
+<pre class="src src-python"><span class="org-keyword">with</span> pm.Model() <span class="org-keyword">as</span> <span class="org-variable-name">model_auto</span>:
+<span class="org-highlight-indentation"> </span>   <span class="org-comment-delimiter"># </span><span class="org-comment">Hyperpriors</span>
+<span class="org-highlight-indentation"> </span>   sigma_alpha = pm.HalfNormal(<span class="org-string">"sigma_alpha"</span>, sigma=1.0)
+<span class="org-highlight-indentation"> </span>   <span class="org-comment-delimiter"># </span><span class="org-comment">Priors</span>
+<span class="org-highlight-indentation"> </span>   <span class="org-comment-delimiter"># </span><span class="org-comment">Site random effect</span>
+<span class="org-highlight-indentation"> </span>   alpha = pm.Normal(<span class="org-string">"alpha"</span>, mu=0, sigma=sigma_alpha, shape=n_sites)
+<span class="org-highlight-indentation"> </span>   <span class="org-comment-delimiter"># </span><span class="org-comment">Latent variables</span>
+<span class="org-highlight-indentation"> </span>   W = pm.Normal(<span class="org-string">"W"</span>, mu=0, sigma=1, shape=(n_sites, n_q))
+<span class="org-highlight-indentation"> </span>   <span class="org-comment-delimiter"># </span><span class="org-comment">Species effects</span>
+<span class="org-highlight-indentation"> </span>   beta = pm.Normal(<span class="org-string">"beta"</span>, mu=0, sigma=1, shape=(n_species, n_p))
+<span class="org-highlight-indentation"> </span>   <span class="org-comment-delimiter"># </span><span class="org-comment">Factor loadings with constraints</span>
+<span class="org-highlight-indentation"> </span>   <span class="org-comment-delimiter"># </span><span class="org-comment">Diagonal</span>
+<span class="org-highlight-indentation"> </span>   Lambda1 = pt.set_subtensor(
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   Lambda0[np.arange(n_q), np.arange(n_q)],
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   pm.HalfNormal(<span class="org-string">"Lambda_diag"</span>, sigma=HALFNORMAL_SCALE, shape=n_q))
+<span class="org-highlight-indentation"> </span>   <span class="org-comment-delimiter"># </span><span class="org-comment">Inferior</span>
+<span class="org-highlight-indentation"> </span>   Lambda2 = pt.set_subtensor(
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   Lambda1[1, 0],
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   pm.Normal(<span class="org-string">"Lambda_inf"</span>, mu=0, sigma=1))
+<span class="org-highlight-indentation"> </span>   <span class="org-comment-delimiter"># </span><span class="org-comment">Block</span>
+<span class="org-highlight-indentation"> </span>   Lambda = pm.Deterministic(
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-string">"Lambda"</span>,
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   pt.set_subtensor(
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   Lambda2[n_q:],
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   pm.Normal(<span class="org-string">"Lambda_block"</span>, mu=0, sigma=1, shape=(n_species-n_q, n_q))))
+<span class="org-highlight-indentation"> </span>   <span class="org-comment-delimiter"># </span><span class="org-comment">Likelihood</span>
+<span class="org-highlight-indentation"> </span>   Xbeta = pm.math.dot(X, beta.transpose())
+<span class="org-highlight-indentation"> </span>   Wlambda = pm.math.dot(W, Lambda.transpose()) 
+<span class="org-highlight-indentation"> </span>   logit_theta = alpha[:, np.newaxis] + Xbeta + Wlambda
+<span class="org-highlight-indentation"> </span>   obs = pm.Bernoulli(<span class="org-string">"obs"</span>, logit_p=logit_theta, observed=Y)
+</pre>
+</div>
+
+<div class="org-src-container">
+<pre class="src src-python"><span class="org-comment-delimiter"># </span><span class="org-comment">Inference</span>
+<span class="org-keyword">with</span> <span class="org-variable-name">model_auto</span>:
+<span class="org-highlight-indentation"> </span>   trace_auto = pm.sample(**SAMPLE_KWARGS)
+</pre>
+</div>
+
+<p>
+Save model with cloudpickle.
+</p>
+
+<div class="org-src-container">
+<pre class="src src-python"><span class="org-variable-name">out_dir</span> = <span class="org-string">"outputs/simulated-data-bad-constraints/"</span>
+<span class="org-keyword">with</span> <span class="org-builtin">open</span>(out_dir + <span class="org-string">"model_trace_auto.pkl"</span>, <span class="org-string">"wb"</span>) <span class="org-keyword">as</span> <span class="org-variable-name">f</span>:
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>model_trace_dump = cloudpickle.dumps({<span class="org-string">'model'</span>: model_auto, <span class="org-string">'trace'</span>: trace_auto})
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>f.write(model_trace_dump)
+</pre>
+</div>
+</div>
+</div>
+
+<div id="outline-container-orge106b70" class="outline-3">
+<h3 id="orge106b70"><span class="section-number-3">8.5.</span> Convergence and model performance</h3>
+<div class="outline-text-3" id="text-8-5">
+<div class="org-src-container">
+<pre class="src src-python"><span class="org-keyword">with</span> <span class="org-variable-name">model_auto</span>:
+<span class="org-highlight-indentation"> </span>   alpha_est = az.summary(trace_auto, var_names=[<span class="org-string">"alpha"</span>], round_to=2)
+<span class="org-highlight-indentation"> </span>   beta_est = az.summary(trace_auto, var_names=[<span class="org-string">"beta"</span>], round_to=2)
+<span class="org-highlight-indentation"> </span>   lambda_est = az.summary(trace_auto, var_names=[<span class="org-string">"Lambda"</span>], round_to=2)
+<span class="org-highlight-indentation"> </span>   lambda_0_est = az.summary(trace_auto,
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span> var_names=[<span class="org-string">"Lambda"</span>],
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span> coords={<span class="org-string">"Lambda_dim_1"</span>: [0]},
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span> round_to=2)
+<span class="org-highlight-indentation"> </span>   lambda_1_est = az.summary(trace_auto,
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span> var_names=[<span class="org-string">"Lambda"</span>],
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span> coords={<span class="org-string">"Lambda_dim_1"</span>: [1]},
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span> round_to=2)
+<span class="org-highlight-indentation"> </span>   W_est = az.summary(trace_auto, var_names=[<span class="org-string">"W"</span>], round_to=2)
+<span class="org-highlight-indentation"> </span>   W_0_est = az.summary(trace_auto, var_names=[<span class="org-string">"W"</span>],
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>coords={<span class="org-string">"W_dim_1"</span>: [0]},
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>round_to=2)
+<span class="org-highlight-indentation"> </span>   W_1_est = az.summary(trace_auto, var_names=[<span class="org-string">"W"</span>],
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>coords={<span class="org-string">"W_dim_1"</span>: [1]},
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>round_to=2)
+</pre>
+</div>
+
+<div class="org-src-container">
+<pre class="src src-python"><span class="org-comment-delimiter"># </span><span class="org-comment">Compute r_hat mean and std</span>
+<span class="org-variable-name">rhat_alpha_mean</span> = <span class="org-builtin">round</span>(alpha_est[<span class="org-string">"r_hat"</span>].mean(), 2)
+<span class="org-variable-name">rhat_alpha_std</span> = <span class="org-builtin">round</span>(alpha_est[<span class="org-string">"r_hat"</span>].std(), 2)
+<span class="org-variable-name">rhat_beta_mean</span> = <span class="org-builtin">round</span>(beta_est[<span class="org-string">"r_hat"</span>].mean(), 2)
+<span class="org-variable-name">rhat_beta_std</span> = <span class="org-builtin">round</span>(beta_est[<span class="org-string">"r_hat"</span>].std(), 2)
+<span class="org-variable-name">rhat_W_mean</span> = <span class="org-builtin">round</span>(W_est[<span class="org-string">"r_hat"</span>].mean(), 2)
+<span class="org-variable-name">rhat_W_std</span> = <span class="org-builtin">round</span>(W_est[<span class="org-string">"r_hat"</span>].std(), 2)
+<span class="org-variable-name">rhat_lambda_mean</span> = <span class="org-builtin">round</span>(lambda_est[<span class="org-string">"r_hat"</span>].mean(), 2)
+<span class="org-variable-name">rhat_lambda_std</span> = <span class="org-builtin">round</span>(lambda_est[<span class="org-string">"r_hat"</span>].std(), 2)
+<span class="org-variable-name">rhat_lambda_diag_mean</span> = <span class="org-builtin">round</span>(lambda_est.loc[[<span class="org-string">"Lambda[0, 0]"</span>, <span class="org-string">"Lambda[1, 1]"</span>], [<span class="org-string">"r_hat"</span>]][<span class="org-string">"r_hat"</span>].mean(), 2)
+<span class="org-variable-name">rhat_lambda_diag_std</span> = <span class="org-builtin">round</span>(lambda_est.loc[[<span class="org-string">"Lambda[0, 0]"</span>, <span class="org-string">"Lambda[1, 1]"</span>], [<span class="org-string">"r_hat"</span>]][<span class="org-string">"r_hat"</span>].std(), 2)
+<span class="org-variable-name">rhat_lambda_small_mean</span> = <span class="org-builtin">round</span>(lambda_est.loc[[<span class="org-string">"Lambda[2, 0]"</span>, <span class="org-string">"Lambda[3, 1]"</span>], [<span class="org-string">"r_hat"</span>]][<span class="org-string">"r_hat"</span>].mean(), 2)
+<span class="org-variable-name">rhat_lambda_small_std</span> = <span class="org-builtin">round</span>(lambda_est.loc[[<span class="org-string">"Lambda[2, 0]"</span>, <span class="org-string">"Lambda[3, 1]"</span>], [<span class="org-string">"r_hat"</span>]][<span class="org-string">"r_hat"</span>].std(), 2)
+
+<span class="org-comment-delimiter"># </span><span class="org-comment">Build dataframe</span>
+<span class="org-variable-name">par_names</span> = [<span class="org-string">"alpha"</span>, <span class="org-string">"beta"</span>, <span class="org-string">"W"</span>, <span class="org-string">"lambda"</span>, <span class="org-string">"lambda_diag"</span>, <span class="org-string">"lambda_small"</span>]
+<span class="org-variable-name">mean_val</span> = [<span class="org-builtin">eval</span>(<span class="org-string">"rhat_"</span> + x + <span class="org-string">"_mean"</span>) <span class="org-keyword">for</span> x <span class="org-keyword">in</span> par_names]
+<span class="org-variable-name">std_val</span> = [<span class="org-builtin">eval</span>(<span class="org-string">"rhat_"</span> + x + <span class="org-string">"_std"</span>) <span class="org-keyword">for</span> x <span class="org-keyword">in</span> par_names]
+<span class="org-variable-name">rhat_dic</span> = {<span class="org-string">"par"</span>: par_names,
+<span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-highlight-indentation"> </span>   <span class="org-string">"r_hat_mean"</span>: mean_val, <span class="org-string">"rhat_std"</span>: std_val}
+<span class="org-variable-name">rhat_df</span> = pd.DataFrame(rhat_dic)
+tabulate(rhat_df, headers=<span class="org-string">"keys"</span>, tablefmt=<span class="org-string">"orgtbl"</span>, showindex=<span class="org-constant">False</span>)
+</pre>
+</div>
+
+<table>
+
+
+<colgroup>
+<col  class="org-left">
+
+<col  class="org-right">
+
+<col  class="org-right">
+</colgroup>
+<thead>
+<tr>
+<th scope="col" class="org-left">par</th>
+<th scope="col" class="org-right">r_hat_mean</th>
+<th scope="col" class="org-right">rhat_std</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="org-left">alpha</td>
+<td class="org-right">1</td>
+<td class="org-right">0</td>
+</tr>
+
+<tr>
+<td class="org-left">beta</td>
+<td class="org-right">1</td>
+<td class="org-right">0</td>
+</tr>
+
+<tr>
+<td class="org-left">W</td>
+<td class="org-right">1</td>
+<td class="org-right">0</td>
+</tr>
+
+<tr>
+<td class="org-left">lambda</td>
+<td class="org-right">1</td>
+<td class="org-right">0</td>
+</tr>
+
+<tr>
+<td class="org-left">lambda_diag</td>
+<td class="org-right">1</td>
+<td class="org-right">0.01</td>
+</tr>
+
+<tr>
+<td class="org-left">lambda_small</td>
+<td class="org-right">1</td>
+<td class="org-right">0</td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+
+<div id="outline-container-org638aa3b" class="outline-3">
+<h3 id="org638aa3b"><span class="section-number-3">8.6.</span> Predicted vs. target parameter values</h3>
+<div class="outline-text-3" id="text-8-6">
+<p>
+Caution, the latent axis \(W_i\) are inverted here.
+</p>
+
+<div class="org-src-container">
+<pre class="src src-python"><span class="org-comment-delimiter"># </span><span class="org-comment">Sorted index</span>
+<span class="org-builtin">id</span> = np.arange(n_species)
+<span class="org-variable-name">id_sort</span> = np.copy(<span class="org-builtin">id</span>)
+<span class="org-variable-name">id_sort</span>[0] = sp_sel[0]
+<span class="org-variable-name">id_sort</span>[1] = sp_sel[1]
+id_sort[<span class="org-variable-name">sp_sel</span>[0]] = 0
+id_sort[<span class="org-variable-name">sp_sel</span>[1]] = 1
+<span class="org-builtin">id</span> = id_sort
+
+<span class="org-comment-delimiter"># </span><span class="org-comment">alpha</span>
+<span class="org-variable-name">f</span> = out_dir + <span class="org-string">"alpha_auto.png"</span>
+<span class="org-variable-name">fig</span>, <span class="org-variable-name">ax</span> = plt.subplots(figsize=(6, 6))
+ax.scatter(alpha_target, alpha_est[<span class="org-string">"mean"</span>], c=<span class="org-string">".3"</span>)
+ax.axline((1, 1), slope=1, ls=<span class="org-string">"--"</span>, c=<span class="org-string">".3"</span>)
+ax.set_title(<span class="org-string">"alpha_auto"</span>)
+fig.savefig(f)
+
+<span class="org-comment-delimiter"># </span><span class="org-comment">beta</span>
+f = out_dir + <span class="org-string">"beta_auto.png"</span>
+fig, ax = plt.subplots(figsize=(6, 6))
+beta_hat = np.asarray(beta_est[<span class="org-string">"mean"</span>]).reshape(n_species, n_p)[<span class="org-builtin">id</span>, :]
+ax.scatter(beta_target.flatten(), beta_hat.flatten(), c=<span class="org-string">".3"</span>)
+ax.axline((1, 1), slope=1, ls=<span class="org-string">"--"</span>, c=<span class="org-string">".3"</span>)
+ax.set_title(<span class="org-string">"beta_auto"</span>)
+fig.savefig(f)
+
+<span class="org-comment-delimiter"># </span><span class="org-comment">W_0</span>
+f = out_dir + <span class="org-string">"W_0_auto.png"</span>
+fig, ax = plt.subplots(figsize=(6, 6))
+ax.scatter(W_target[:, 0], W_1_est[<span class="org-string">"mean"</span>], c=<span class="org-string">".3"</span>)
+ax.axline((1, 1), slope=1, ls=<span class="org-string">"--"</span>, c=<span class="org-string">".3"</span>)
+ax.axline((-1, 1), slope=-1, ls=<span class="org-string">"--"</span>, c=<span class="org-string">".3"</span>)
+ax.set_title(<span class="org-string">"W_0_auto"</span>)
+fig.savefig(f)
+
+<span class="org-comment-delimiter"># </span><span class="org-comment">W_1</span>
+f = out_dir + <span class="org-string">"W_1_auto.png"</span>
+fig, ax = plt.subplots(figsize=(6, 6))
+ax.scatter(W_target[:, 1], W_0_est[<span class="org-string">"mean"</span>], c=<span class="org-string">".3"</span>)
+ax.axline((1, 1), slope=1, ls=<span class="org-string">"--"</span>, c=<span class="org-string">".3"</span>)
+ax.axline((-1, 1), slope=-1, ls=<span class="org-string">"--"</span>, c=<span class="org-string">".3"</span>)
+ax.set_title(<span class="org-string">"W_1_auto"</span>)
+fig.savefig(f)
+
+<span class="org-comment-delimiter"># </span><span class="org-comment">lambda_0</span>
+f = out_dir + <span class="org-string">"lambda_0_auto.png"</span>
+fig, ax = plt.subplots(figsize=(6, 6))
+lambda_0_hat = lambda_0_est[<span class="org-string">"mean"</span>][<span class="org-builtin">id</span>]
+ax.scatter(lambda_target[:, 0], lambda_1_hat, c=<span class="org-string">".3"</span>)
+ax.axline((1, 1), slope=1, ls=<span class="org-string">"--"</span>, c=<span class="org-string">".3"</span>)
+ax.axline((-1, 1), slope=-1, ls=<span class="org-string">"--"</span>, c=<span class="org-string">".3"</span>)
+ax.set_title(<span class="org-string">"lambda_0_auto"</span>)
+fig.savefig(f)
+
+<span class="org-comment-delimiter"># </span><span class="org-comment">lambda_1</span>
+f = out_dir + <span class="org-string">"lambda_1_auto.png"</span>
+fig, ax = plt.subplots(figsize=(6, 6))
+lambda_1_hat = lambda_1_est[<span class="org-string">"mean"</span>][<span class="org-builtin">id</span>]
+ax.scatter(lambda_target[:, 1], lambda_0_hat, c=<span class="org-string">".3"</span>)
+ax.axline((1, 1), slope=1, ls=<span class="org-string">"--"</span>, c=<span class="org-string">".3"</span>)
+ax.axline((-1, 1), slope=-1, ls=<span class="org-string">"--"</span>, c=<span class="org-string">".3"</span>)
+ax.set_title(<span class="org-string">"lambda_1_auto"</span>)
+fig.savefig(f)
+
+<span class="org-comment-delimiter"># </span><span class="org-comment">W_lambda</span>
+lambda_hat = np.asarray(lambda_est[<span class="org-string">"mean"</span>]).reshape(n_species, n_q)[<span class="org-builtin">id</span>, :]
+W_lambda_est = np.matmul(
+<span class="org-highlight-indentation"> </span>   np.asarray(W_est[<span class="org-string">"mean"</span>]).reshape(n_sites, n_q),
+<span class="org-highlight-indentation"> </span>   lambda_hat.transpose())
+f = out_dir + <span class="org-string">"W_lambda_auto.png"</span>
+fig, ax = plt.subplots(figsize=(6, 6))
+ax.scatter(Wlambda_target.flatten(), W_lambda_est.flatten(), c=<span class="org-string">".3"</span>)
+ax.axline((1, 1), slope=1, ls=<span class="org-string">"--"</span>, c=<span class="org-string">".3"</span>)
+ax.set_title(<span class="org-string">"W_lambda_auto"</span>)
+fig.savefig(f)
+</pre>
+</div>
+
+
+<figure id="org759df66">
+<img src="outputs/simulated-data-bad-constraints/W_0.png" alt="W_0.png" width="450" style="float:left;">
+
+</figure>
+
+
+<figure id="orgd8266bb">
+<img src="outputs/simulated-data-bad-constraints/W_0_auto.png" alt="W_0_auto.png" width="450">
+
+</figure>
+
+
+<figure id="org0ca5ccc">
+<img src="outputs/simulated-data-bad-constraints/W_1.png" alt="W_1.png" width="450" style="float:left;">
+
+</figure>
+
+
+<figure id="orge1ac496">
+<img src="outputs/simulated-data-bad-constraints/W_1_auto.png" alt="W_1_auto.png" width="450">
+
+</figure>
+
+
+<figure id="orgc3743d0">
+<img src="outputs/simulated-data-bad-constraints/lambda_0.png" alt="lambda_0.png" width="450" style="float:left;">
+
+</figure>
+
+
+<figure id="org31ec9ae">
+<img src="outputs/simulated-data-bad-constraints/lambda_0_auto.png" alt="lambda_0_auto.png" width="450">
+
+</figure>
+
+
+<figure id="org28a08ab">
+<img src="outputs/simulated-data-bad-constraints/lambda_1.png" alt="lambda_1.png" width="450" style="float:left;">
+
+</figure>
+
+
+<figure id="org1f821ff">
+<img src="outputs/simulated-data-bad-constraints/lambda_1_auto.png" alt="lambda_1_auto.png" width="450">
+
+</figure>
+</div>
+</div>
+</div>
+</div>
+</body>
+</html>

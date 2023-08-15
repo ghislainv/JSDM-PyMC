@@ -62,7 +62,7 @@ e <- matrix(rnorm(n_species * n_sites, 0, 1), n_sites, n_species)
 Z <- alpha_target + X %*% beta_target + W %*% lambda_target + e
 # Presence-absence matrix Y
 Y <- matrix(0, n_sites, n_species)
-Y[Z > 0] <- 
+Y[Z > 0] <- 1
 Y <- data.frame(Y)
 colnames(Y) <- paste("sp", 1:n_species, sep="_")
 rownames(Y) <- paste("site", 1:n_sites, sep="_")
